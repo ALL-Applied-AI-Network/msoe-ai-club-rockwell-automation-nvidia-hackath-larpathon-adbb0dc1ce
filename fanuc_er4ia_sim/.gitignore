@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+runs/
+frames*/
+gripper_shots/
+*.mp4
+*.zip

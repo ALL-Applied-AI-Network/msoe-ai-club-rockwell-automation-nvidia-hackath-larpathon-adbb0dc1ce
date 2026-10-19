@@ -1,0 +1,201 @@
+{
+  "package": "FANUC ER-4iA hackathon starter",
+  "media_included": false,
+  "external_dependencies": [
+    "Isaac Sim",
+    "FANUC robot USD",
+    "Cosmos3-Nano framework and weights"
+  ],
+  "files": [
+    {
+      "path": ".gitignore",
+      "size_bytes": 68,
+      "sha256": "52daa83dbd1f898903f6e3d5ccc9c566b819e03162ac095cdfa61e78feb6dc2d"
+    },
+    {
+      "path": "AGENTS.md",
+      "size_bytes": 3239,
+      "sha256": "40e83cbfef0adacc1996c9698d1b44f2543ab2f1119cf6ca1f9e7fe7cc64a4c2"
+    },
+    {
+      "path": "README.md",
+      "size_bytes": 2403,
+      "sha256": "8fe3e9cc5a1aadf0b8012136a36d962aff5231015a07f8d16487d33d05d2fc9f"
+    },
+    {
+      "path": "SETUP.md",
+      "size_bytes": 4650,
+      "sha256": "59ec54ff7c264ea2e4edd9bc352bdbdca2234f9383cc957a0504b336a4ff6ccd"
+    },
+    {
+      "path": "assets/gripper/photo_finger_detail.json",
+      "size_bytes": 346321,
+      "sha256": "ec52b5277fe0c3b927bff614508358a9021cc2dd7dc0a11805310968de10566f"
+    },
+    {
+      "path": "assets/gripper/smc_mhzl2_16d2.json",
+      "size_bytes": 405261,
+      "sha256": "5a151fdf4e5a33dea29bbbc1afa7a42ba93d7324acdc95089e774bdddf6960be"
+    },
+    {
+      "path": "assets/usd_assets/cube.usda",
+      "size_bytes": 122002,
+      "sha256": "d1d6cd060254536604fb1ecc2d5422fb6362c76443f15e8d826fa97dc894b9f4"
+    },
+    {
+      "path": "assets/usd_assets/vial.usda",
+      "size_bytes": 46071,
+      "sha256": "8b0b4470e13f3c401ce77b0cea8d5fb72d8c76a0619c97cd2567712dc294ac32"
+    },
+    {
+      "path": "assets/usd_assets/vial_cap.usda",
+      "size_bytes": 91339,
+      "sha256": "3f28870da156f53452b8d5c5bb306b4688ecede2f24faf29af9ec0a3ec0bd09a"
+    },
+    {
+      "path": "backproject.py",
+      "size_bytes": 3271,
+      "sha256": "94017f60b3cb493ec647e6c41519914526c36e8653dbb304bc0d1c1cd1d037b0"
+    },
+    {
+      "path": "bootstrap.sh",
+      "size_bytes": 485,
+      "sha256": "0ed403fe4b9417ac130b62b9f567ae082e811ba8a83822660139a6d2c6fefafe"
+    },
+    {
+      "path": "build_scene.py",
+      "size_bytes": 6256,
+      "sha256": "0b1011d6970f47aadf8c5e0896df16547593c2a658af9a8a2510f08ba6fb1e90"
+    },
+    {
+      "path": "capture_scene.py",
+      "size_bytes": 5805,
+      "sha256": "b60ce6a62fa17439b6ece9a7573bf4389c4de4cfed119b8a84c5edb45da466c2"
+    },
+    {
+      "path": "cell.py",
+      "size_bytes": 69958,
+      "sha256": "cfde65b149d4c87add24793734d65d968b79ea70563c169e2f46b458b32a4260"
+    },
+    {
+      "path": "cube_pose.py",
+      "size_bytes": 4799,
+      "sha256": "d49f9d25aecbfefbb3a090f916b214a5c7614a5c679286e66c0afe655fd794bc"
+    },
+    {
+      "path": "docs/CALIBRATION_V05.md",
+      "size_bytes": 5721,
+      "sha256": "35c7b482b16c780fbc588fe04ada8a17d242ea54023d33193ade76e1145c7c72"
+    },
+    {
+      "path": "docs/MODEL_NOTES.md",
+      "size_bytes": 4615,
+      "sha256": "953314c1813b64ad306d8eb1709203bdc3e535437e10520eacecaf49eef877d7"
+    },
+    {
+      "path": "encode_video.py",
+      "size_bytes": 963,
+      "sha256": "88e2afccb34bd473b9d0fdff1f2b8a5ebb51b4c43d37401e4509280b3edb1687"
+    },
+    {
+      "path": "fk.py",
+      "size_bytes": 2311,
+      "sha256": "f7aa7df14c8d2b8c2a4838846caa302fcc0976276d616769aa6730bcbff2abed"
+    },
+    {
+      "path": "gripper_geometry.py",
+      "size_bytes": 3055,
+      "sha256": "5ee8ff8c87d9a44f96f8af738b46fd9d2a586fa2ad3b8e0968c86161355007dc"
+    },
+    {
+      "path": "ik.py",
+      "size_bytes": 4224,
+      "sha256": "6326a47a395c02944f4f2ae1231ee4bb082e5ceb06e039d79992f66d8673d795"
+    },
+    {
+      "path": "make_textures.py",
+      "size_bytes": 4442,
+      "sha256": "141b1c3bfe7e9f70d030ec4eb055d4c3eb1da8a547e4273fe60ad32e09bbf7ee"
+    },
+    {
+      "path": "package_hackathon.py",
+      "size_bytes": 3267,
+      "sha256": "8c00e0bef7c98be481217ce1a29140ffc3c7bff0c9d8e6e29ab4ba145bfb24ea"
+    },
+    {
+      "path": "perceive.py",
+      "size_bytes": 35130,
+      "sha256": "41f4eaaf46d8d3844ab3d89a4974bca25bf5e9b2617f8c490f5aa5af09156f74"
+    },
+    {
+      "path": "plan_grasps.py",
+      "size_bytes": 16379,
+      "sha256": "527a265c885ff3ddd9845a24484fcf1cfeca9f90f6d6cc143398d907dac7982d"
+    },
+    {
+      "path": "plan_sort.py",
+      "size_bytes": 22340,
+      "sha256": "b7045850f525d31dfb8d0b3ba3657db61ad2bf5567a977635eea75752a1d526d"
+    },
+    {
+      "path": "render_settings.py",
+      "size_bytes": 1111,
+      "sha256": "4763a7a4b73e68485da3c806dc905174298cf9c7befe3103280ae907642581c9"
+    },
+    {
+      "path": "requirements-cosmos.txt",
+      "size_bytes": 208,
+      "sha256": "38306f1dd7f70e3eed49f4488d9e18ceddbb6d2aafe056a34b4823737b574d34"
+    },
+    {
+      "path": "requirements.txt",
+      "size_bytes": 275,
+      "sha256": "7739b9fd3829ce62c03c24a763838de98533ee387635f6a5e5828c97b810f467"
+    },
+    {
+      "path": "run_sort_pipeline.sh",
+      "size_bytes": 1715,
+      "sha256": "1f7df9e835ffec62b0ac68dab14149d8d946c56d3607e8d25b32f7d2671f9bd0"
+    },
+    {
+      "path": "scene_config.py",
+      "size_bytes": 18323,
+      "sha256": "6d5d0c7df867986e78ff02b2888236dca6c00cc3bc6b7ecf60f9a49d75facc1b"
+    },
+    {
+      "path": "share.sh",
+      "size_bytes": 253,
+      "sha256": "3e4ad489c37a38348baad7396b4753be56721021c3c1bf05a0282d86c7a1718d"
+    },
+    {
+      "path": "sort_scene.py",
+      "size_bytes": 25715,
+      "sha256": "0a51cf9f748e292debf84829b190df72397ec635d27e1980d93e9eb0d433541f"
+    },
+    {
+      "path": "test_cube_perception.py",
+      "size_bytes": 2616,
+      "sha256": "3f25fd0e622cdac4de7a14ec85a9d793f15b53bbf26c231b10ff865cb0d76270"
+    },
+    {
+      "path": "test_cube_pose.py",
+      "size_bytes": 9345,
+      "sha256": "f4e6af7acc464a5f6da86d5a28110f39ae47da7472350b5843dac6055fa1ecd3"
+    },
+    {
+      "path": "test_runtime_config.py",
+      "size_bytes": 1633,
+      "sha256": "0eb873f7db0b38148d977a231d53b04459ac3681e852943ff2e5be2a872ea168"
+    },
+    {
+      "path": "test_sort_planning.py",
+      "size_bytes": 12975,
+      "sha256": "6f7f683d8efc95b87a48a19eb51cee567f858772204f30bca4b1be93cff39256"
+    },
+    {
+      "path": "test_support.py",
+      "size_bytes": 879,
+      "sha256": "8d3420ca756243570bb519761a5b6b4e229fac5da14df1824fd0df1a857fa22d"
+    }
+  ]
+}
