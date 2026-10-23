@@ -1,0 +1,37 @@
+{
+  "articulation_discovered": true,
+  "articulation_paths": [
+    "/er4ia/root_joint"
+  ],
+  "automatic_asset_downloads_performed": false,
+  "dependency_asset_count": 1,
+  "dependency_layer_count": 4,
+  "duration_seconds": 25.679,
+  "finished_utc": "2026-10-23T04:08:59.147075+00:00",
+  "prim_count": 102,
+  "requested": {
+    "accept_eula": "Y",
+    "cpus": 4,
+    "gpu": true,
+    "image": "nvcr.io/nvidia/isaac-sim:6.0.0",
+    "isaacsim_asset_root_set": false,
+    "max_minutes": 20,
+    "memory_gb": 32,
+    "privacy_consent": "Y"
+  },
+  "runtime": {
+    "platform": "Linux-7.0.0-1019-nvidia-aarch64-with-glibc2.39",
+    "python": "3.12.13 (tags/v3.12.13-dirty:3bb231a, Mar  4 2026, 13:54:20) [GCC 11.4.0]"
+  },
+  "schema_version": 1,
+  "simulation_app_initialized": true,
+  "sorting_pipeline_run": false,
+  "stage_loading_errors": [],
+  "stage_open_result": true,
+  "stage_opened": true,
+  "stage_path": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd",
+  "status": "PASS",
+  "unresolved_reference_count": 0,
+  "unresolved_references": [],
+  "validation": "isaac_native_stage_load"
+}

@@ -1,0 +1,22 @@
+Standalone USD Dependency Validation
+====================================
+Status: FAIL
+Input: shared/fanuc-stack
+USD layers: 4 / expected 4
+Stages opened: 4 / 4
+Dependency records: 6
+Missing dependency occurrences: 2
+Unique missing USD references: 1
+Input files unchanged: True
+GPU: false
+
+Missing dependency details (exact USD references):
+- reference: OmniPBR.mdl
+  source_layer: /job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd
+  kind: usd_unresolved_asset
+- reference: OmniPBR.mdl
+  source_layer: /job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd
+  kind: usd_unresolved_asset
+
+Machine report: /job/out/usd_dependency_report.json
+Progress log: /job/out/progress.log

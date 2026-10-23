@@ -1,0 +1,12 @@
+Isaac-Native FANUC ER-4iA Validation
+======================================
+Status: PASS
+Stage: /job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd
+SimulationApp initialized: True
+Stage opened through omni.usd: True
+Stage-loading errors: 0
+Unresolved references: 0
+Prim count: 102
+Robot articulation discovered: True
+Articulation paths: /er4ia/root_joint
+Unresolved reference details: <none>

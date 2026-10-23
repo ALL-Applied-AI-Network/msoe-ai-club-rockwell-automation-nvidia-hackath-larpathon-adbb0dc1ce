@@ -1,0 +1,8 @@
+[progress] 2026-10-23T04:08:33.488662+00:00 validation script started; explicit stage path=/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd
+[progress] 2026-10-23T04:08:33.488722+00:00 before Isaac/Kit initialization
+[progress] 2026-10-23T04:08:59.043395+00:00 after Isaac/Kit initialization
+[progress] 2026-10-23T04:08:59.043526+00:00 before Isaac/Kit stage loading
+[progress] 2026-10-23T04:08:59.139457+00:00 after Isaac/Kit stage loading; open_result=True stage_present=True tf_errors=0
+[progress] 2026-10-23T04:08:59.139833+00:00 computing dependency report with Isaac/Kit initialized
+[progress] 2026-10-23T04:08:59.147406+00:00 report written; status=PASS prim_count=102 articulation=True unresolved=0 stage_errors=0
+[progress] 2026-10-23T04:08:59.147515+00:00 closing Isaac/Kit application

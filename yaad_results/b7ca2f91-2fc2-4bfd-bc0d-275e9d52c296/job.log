@@ -1,0 +1,50 @@
+[progress] 2026-10-23T03:41:10+00:00 install standalone usd-core
+Collecting usd-core
+  Downloading usd_core-26.11-cp312-none-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl.metadata (1.8 kB)
+Downloading usd_core-26.11-cp312-none-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl (27.7 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 27.7/27.7 MB 110.2 MB/s eta 0:00:00
+Installing collected packages: usd-core
+Successfully installed usd-core-26.11
+WARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.
+[progress] 2026-10-23T03:41:12+00:00 validate recursively; Isaac Sim is not used
+[progress] 2026-10-23T03:41:12.326007+00:00 found 4 USD layers: assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd, assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_physics.usd, assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_sensor.usd, assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd
+[progress] 2026-10-23T03:41:12.330715+00:00 [1/4] ComputeAllDependencies assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd
+Warning: in _EnqueueDependency at line 145 of /opt/USD/pxr/usd/usdUtils/assetLocalization.cpp -- Failed to resolve reference @OmniPBR.mdl@ with computed asset path @OmniPBR.mdl@ found in layer @/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd@.
+[progress] 2026-10-23T03:41:12.348585+00:00 [1/4] layers=1 assets=0 unresolved=1
+[progress] 2026-10-23T03:41:12.348684+00:00 [2/4] ComputeAllDependencies assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_physics.usd
+Warning: in _EnqueueDependency at line 145 of /opt/USD/pxr/usd/usdUtils/assetLocalization.cpp -- Failed to resolve reference @OmniPBR.mdl@ with computed asset path @OmniPBR.mdl@ found in layer @/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd@.
+[progress] 2026-10-23T03:41:12.351012+00:00 [2/4] layers=2 assets=0 unresolved=1
+[progress] 2026-10-23T03:41:12.351065+00:00 [3/4] ComputeAllDependencies assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_sensor.usd
+[progress] 2026-10-23T03:41:12.351311+00:00 [3/4] layers=1 assets=0 unresolved=0
+[progress] 2026-10-23T03:41:12.351350+00:00 [4/4] ComputeAllDependencies assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd
+Warning: in _EnqueueDependency at line 145 of /opt/USD/pxr/usd/usdUtils/assetLocalization.cpp -- Failed to resolve reference @OmniPBR.mdl@ with computed asset path @OmniPBR.mdl@ found in layer @/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd@.
+[progress] 2026-10-23T03:41:12.354301+00:00 [4/4] layers=4 assets=0 unresolved=1
+[progress] 2026-10-23T03:41:12.354323+00:00 inspect exact references in 4 recursively discovered layers
+[progress] 2026-10-23T03:41:12.496332+00:00 layer /job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd: 0 external asset references
+[progress] 2026-10-23T03:41:12.496860+00:00 layer /job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_physics.usd: 1 external asset references
+[progress] 2026-10-23T03:41:12.496920+00:00 layer /job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_sensor.usd: 0 external asset references
+[progress] 2026-10-23T03:41:12.497496+00:00 layer /job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd: 3 external asset references
+[progress] 2026-10-23T03:41:12.502525+00:00 complete status=FAIL dependencies=6 missing_unique=1 input_unchanged=True
+Standalone USD Dependency Validation
+====================================
+Status: FAIL
+Input: shared/fanuc-stack
+USD layers: 4 / expected 4
+Stages opened: 4 / 4
+Dependency records: 6
+Missing dependency occurrences: 2
+Unique missing USD references: 1
+Input files unchanged: True
+GPU: false
+
+Missing dependency details (exact USD references):
+- reference: OmniPBR.mdl
+  source_layer: /job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd
+  kind: usd_unresolved_asset
+- reference: OmniPBR.mdl
+  source_layer: /job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd
+  kind: usd_unresolved_asset
+
+Machine report: /job/out/usd_dependency_report.json
+Progress log: /job/out/progress.log
+[progress] 2026-10-23T03:41:12+00:00 job finished

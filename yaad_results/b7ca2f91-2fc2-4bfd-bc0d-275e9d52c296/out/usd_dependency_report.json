@@ -1,0 +1,156 @@
+{
+  "all_stages_opened": true,
+  "dependencies": [
+    {
+      "anchored_path": "OmniPBR.mdl",
+      "exists": false,
+      "kind": "usd_unresolved_asset",
+      "resolved_path": null,
+      "source_layer": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd",
+      "usd_reference": "OmniPBR.mdl"
+    },
+    {
+      "anchored_path": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd",
+      "exists": true,
+      "kind": "usd_external_reference",
+      "resolved_path": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd",
+      "source_layer": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_physics.usd",
+      "usd_reference": "./er4ia_base.usd"
+    },
+    {
+      "anchored_path": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd",
+      "exists": true,
+      "kind": "usd_external_reference",
+      "resolved_path": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd",
+      "source_layer": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd",
+      "usd_reference": "./configuration/er4ia_base.usd"
+    },
+    {
+      "anchored_path": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_physics.usd",
+      "exists": true,
+      "kind": "usd_external_reference",
+      "resolved_path": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_physics.usd",
+      "source_layer": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd",
+      "usd_reference": "./configuration/er4ia_physics.usd"
+    },
+    {
+      "anchored_path": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_sensor.usd",
+      "exists": true,
+      "kind": "usd_external_reference",
+      "resolved_path": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_sensor.usd",
+      "source_layer": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd",
+      "usd_reference": "./configuration/er4ia_sensor.usd"
+    },
+    {
+      "anchored_path": "OmniPBR.mdl",
+      "exists": false,
+      "kind": "usd_unresolved_asset",
+      "resolved_path": null,
+      "source_layer": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd",
+      "usd_reference": "OmniPBR.mdl"
+    }
+  ],
+  "dependency_count": 6,
+  "duration_seconds": 0.181901,
+  "errors": [],
+  "expected_usd_layer_count": 4,
+  "finished_utc": "2026-10-23T03:41:12.502274+00:00",
+  "input_integrity": {
+    "file_count_after": 6,
+    "file_count_before": 6,
+    "unchanged": true
+  },
+  "input_path": "shared/fanuc-stack",
+  "layer_count_ok": true,
+  "missing_dependencies": [
+    {
+      "anchored_path": "OmniPBR.mdl",
+      "exists": false,
+      "kind": "usd_unresolved_asset",
+      "resolved_path": null,
+      "source_layer": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd",
+      "usd_reference": "OmniPBR.mdl"
+    },
+    {
+      "anchored_path": "OmniPBR.mdl",
+      "exists": false,
+      "kind": "usd_unresolved_asset",
+      "resolved_path": null,
+      "source_layer": "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd",
+      "usd_reference": "OmniPBR.mdl"
+    }
+  ],
+  "missing_occurrence_count": 2,
+  "missing_unique_count": 1,
+  "missing_unique_references": [
+    "OmniPBR.mdl"
+  ],
+  "requested": {
+    "cpus": 4,
+    "gpu": false,
+    "max_minutes": 15,
+    "memory_gb": 8
+  },
+  "root_results": [
+    {
+      "assets": [],
+      "layers": [
+        "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd"
+      ],
+      "root": "assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd",
+      "stage_opened": true,
+      "unresolved": [
+        "OmniPBR.mdl"
+      ]
+    },
+    {
+      "assets": [],
+      "layers": [
+        "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd",
+        "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_physics.usd"
+      ],
+      "root": "assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_physics.usd",
+      "stage_opened": true,
+      "unresolved": [
+        "OmniPBR.mdl"
+      ]
+    },
+    {
+      "assets": [],
+      "layers": [
+        "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_sensor.usd"
+      ],
+      "root": "assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_sensor.usd",
+      "stage_opened": true,
+      "unresolved": []
+    },
+    {
+      "assets": [],
+      "layers": [
+        "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd",
+        "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_physics.usd",
+        "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_sensor.usd",
+        "/job/in/assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd"
+      ],
+      "root": "assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd",
+      "stage_opened": true,
+      "unresolved": [
+        "OmniPBR.mdl"
+      ]
+    }
+  ],
+  "runtime": {
+    "platform": "Linux-7.0.0-1019-nvidia-aarch64-with-glibc2.41",
+    "python": "3.12.15 (main, Oct 21 2026, 01:13:23) [GCC 14.2.0]",
+    "usd_core": "/usr/local/lib/python3.12/site-packages/pxr/Usd/__init__.py"
+  },
+  "schema_version": 2,
+  "status": "FAIL",
+  "usd_layers_found": [
+    "assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_base.usd",
+    "assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_physics.usd",
+    "assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/configuration/er4ia_sensor.usd",
+    "assets/isaac-6.0/Assets/Isaac/6.0/Isaac/Robots/Fanuc/er4ia/er4ia.usd"
+  ],
+  "validation": "standalone_usd_dependency_resolution"
+}
