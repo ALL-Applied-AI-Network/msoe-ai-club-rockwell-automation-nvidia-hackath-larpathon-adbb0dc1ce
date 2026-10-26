@@ -1,0 +1,26 @@
+{
+  "checks": {
+    "all_required_files_exist": false
+  },
+  "details": {
+    "missing_or_empty": [
+      "/job/out/world_camera.png",
+      "/job/out/camera.json",
+      "/job/out/ground_truth.json",
+      "/job/out/scene_state.json"
+    ],
+    "paths": {
+      "camera": "/job/out/camera.json",
+      "ground_truth": "/job/out/ground_truth.json",
+      "image": "/job/out/world_camera.png",
+      "log": "/job/out/capture_job.log",
+      "scene_state": "/job/out/scene_state.json"
+    }
+  },
+  "failures": [
+    "all_required_files_exist"
+  ],
+  "status": "FAIL",
+  "validation": "capture_outputs_only"
+}
+There was an error running python

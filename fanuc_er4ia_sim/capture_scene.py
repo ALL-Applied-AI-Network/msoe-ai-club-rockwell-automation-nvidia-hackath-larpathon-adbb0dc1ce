@@ -13,6 +13,10 @@ import argparse, json, os, sys
 parser = argparse.ArgumentParser()
 parser.add_argument("--out", default="run")
 parser.add_argument("--camera", default="table", choices=["table", "side", "wrist"])
+parser.add_argument(
+    "--resolution",
+    help="Capture resolution as WIDTHxHEIGHT; for example 640x360",
+)
 args = parser.parse_args()
 # resolve before Isaac starts: Kit changes the working directory
 args.out = os.path.abspath(args.out)
@@ -24,6 +28,7 @@ sim_app = SimulationApp({"headless": True})
 import numpy as np
 import cv2
 from pxr import UsdGeom, Gf
+import omni.replicator.core as rep
 import omni.usd
 from isaacsim.core.api import World
 
@@ -49,8 +54,13 @@ _CAMS = {
 }
 cam_path, cfg = _CAMS[args.camera]
 cfg = dict(cfg)
-# Capture more top-face detail for 10 mm cubes; execution videos stay at 1080p.
-if args.camera == "table" and C.SORT_TASK == "cube_stack":
+
+if args.resolution:
+    width, height = (int(value) for value in args.resolution.lower().split("x", 1))
+    if width <= 0 or height <= 0:
+        raise ValueError("--resolution dimensions must be positive")
+    cfg["resolution"] = (width, height)
+elif args.camera == "table" and C.SORT_TASK == "cube_stack":
     cfg["resolution"] = tuple(2 * v for v in cfg["resolution"])
 
 from isaacsim.sensors.camera import Camera
@@ -59,6 +69,26 @@ cam = Camera(prim_path=cam_path, resolution=cfg["resolution"])
 cell.enable_ccd(world)
 world.reset()
 cam.initialize()
+
+import omni.timeline
+
+camera_prim = stage.GetPrimAtPath(cam_path)
+render_product_path = cam.get_render_product_path()
+render_product_prim = stage.GetPrimAtPath(render_product_path)
+timeline = omni.timeline.get_timeline_interface()
+if not timeline.is_playing():
+    timeline.play()
+
+print(
+    "[capture] setup "
+    f"camera={cam_path} camera_valid={camera_prim.IsValid()} "
+    f"camera_type={camera_prim.GetTypeName()} "
+    f"render_product={render_product_path} "
+    f"render_product_valid={render_product_prim.IsValid()} "
+    f"timeline_playing={timeline.is_playing()} "
+    f"resolution={cfg['resolution']}",
+    flush=True,
+)
 
 # park the arm out of the overhead camera's view before the snapshot
 from isaacsim.core.prims import SingleArticulation
@@ -75,14 +105,44 @@ for jn, v in cell.jaw_targets(C.JAW_OPEN).items():
 arm.set_joint_positions(q)
 arm.apply_action(ArticulationAction(joint_positions=q))
 
-# MDL materials need frames to compile before capture
+# MDL materials need frames to compile before synchronized capture.
 for _ in range(90):
     world.step(render=True)
 
-os.makedirs(args.out, exist_ok=True)
-rgba = cam.get_rgba()
+max_synchronized_attempts = 3
+rgba = None
+for attempt in range(1, max_synchronized_attempts + 1):
+    if attempt == 1:
+        print("[capture] before Replicator synchronized step", flush=True)
+    rep.orchestrator.step(wait_for_render=True)
+    if attempt == 1:
+        print("[capture] after Replicator synchronized step", flush=True)
+    candidate = cam.get_rgba()
+    print(
+        f"[capture] synchronized RGB attempt {attempt}/{max_synchronized_attempts} "
+        f"type={type(candidate).__name__} shape={getattr(candidate, 'shape', None)}",
+        flush=True,
+    )
+    if (
+        candidate is not None
+        and getattr(candidate, "ndim", 0) == 3
+        and candidate.shape[2] >= 3
+    ):
+        rgba = candidate
+        print(f"[capture] RGB ready after {90 + attempt} rendered steps", flush=True)
+        break
+
 if rgba is None:
-    raise RuntimeError("Camera returned no image; check the host GPU")
+    raise RuntimeError(
+        f"RGB annotator produced no valid frame after {max_synchronized_attempts} "
+        "synchronized attempts; "
+        f"camera_valid={camera_prim.IsValid()}, "
+        f"render_product_valid={render_product_prim.IsValid()}, "
+        f"timeline_playing={timeline.is_playing()}, "
+        f"resolution={cfg['resolution']}"
+    )
+
+os.makedirs(args.out, exist_ok=True)
 rgb = rgba[:, :, :3].astype(np.uint8)
 img_path = os.path.join(args.out, "world_camera.png")
 cv2.imwrite(img_path, cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR))

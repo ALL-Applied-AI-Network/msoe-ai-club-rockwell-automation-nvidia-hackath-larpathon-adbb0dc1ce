@@ -1,0 +1,83 @@
+{
+  "checks": {
+    "all_required_files_exist": true,
+    "camera_is_table": true,
+    "camera_reports_640x360": true,
+    "ground_truth_has_10_objects": true,
+    "image_decodes": true,
+    "image_is_640x360": true,
+    "image_nonblack": true,
+    "image_nonconstant": true,
+    "log_camera_prim_valid_and_typed": true,
+    "log_render_product_valid": true,
+    "log_rgb_became_available": true,
+    "log_timeline_playing": true,
+    "scene_state_has_10_objects": true
+  },
+  "details": {
+    "camera": {
+      "camera": "table",
+      "camera_to_world": [
+        [
+          -0.018651004245830327,
+          0.9989789034382659,
+          0.041149611491507025,
+          0.0
+        ],
+        [
+          -0.7943405646546062,
+          -0.03979944657748935,
+          0.6061675275007125,
+          0.0
+        ],
+        [
+          0.6071863036867872,
+          -0.02138117249838115,
+          0.7942717658822899,
+          0.0
+        ],
+        [
+          0.7770000100135803,
+          -0.04259999841451645,
+          1.7023999691009521,
+          1.0
+        ]
+      ],
+      "focal_length_mm": 11.215800285339355,
+      "horizontal_aperture_mm": 20.954999923706055,
+      "resolution": [
+        640,
+        360
+      ],
+      "robot_base_xy": [
+        0.0,
+        0.0
+      ],
+      "table_top_z": 0.8949,
+      "vertical_aperture_mm": 11.787187576293945
+    },
+    "ground_truth_objects": 10,
+    "image": {
+      "bytes": 77963,
+      "max": 231,
+      "min": 3,
+      "shape": [
+        360,
+        640,
+        3
+      ]
+    },
+    "paths": {
+      "camera": "/job/out/camera.json",
+      "ground_truth": "/job/out/ground_truth.json",
+      "image": "/job/out/world_camera.png",
+      "log": "/job/out/capture_job.log",
+      "scene_state": "/job/out/scene_state.json"
+    },
+    "rgb_ready_after_steps": 91,
+    "scene_state_objects": 10
+  },
+  "failures": [],
+  "status": "PASS",
+  "validation": "capture_outputs_only"
+}
