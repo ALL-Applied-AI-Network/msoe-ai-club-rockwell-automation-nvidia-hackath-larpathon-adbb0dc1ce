@@ -1,0 +1,8 @@
+{
+  "job_id": "f6dac461-95c4-4c56-a482-a7c7dc38afc3",
+  "status": "cancelled",
+  "ready": true,
+  "path_in_workspace": "/workspace/results/f6dac461-95c4-4c56-a482-a7c7dc38afc3",
+  "download": "scp -r yt-larpathon78f7@172.30.102.93:results/f6dac461-95c4-4c56-a482-a7c7dc38afc3 .",
+  "retrieval_note": "YAAD API metadata and log tail preserved locally. Full SCP timed out because 172.30.102.93 was unreachable without the CSI network/VPN."
+}

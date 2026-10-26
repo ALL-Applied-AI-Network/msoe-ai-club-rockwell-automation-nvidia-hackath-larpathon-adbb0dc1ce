@@ -1,0 +1,9 @@
+{
+  "job_id": "eaf0a428-c552-43a8-bb5d-84d795013bc1",
+  "status": "failed",
+  "ready": true,
+  "path_in_workspace": "/workspace/results/eaf0a428-c552-43a8-bb5d-84d795013bc1",
+  "download": "scp -r yt-larpathon78f7@172.30.102.93:results/eaf0a428-c552-43a8-bb5d-84d795013bc1 .",
+  "how": "Run the download command on this computer (it uses the SSH key registered on the website). Connect the CSI VPN (FortiClient) first unless on the CSI network."
+}
+

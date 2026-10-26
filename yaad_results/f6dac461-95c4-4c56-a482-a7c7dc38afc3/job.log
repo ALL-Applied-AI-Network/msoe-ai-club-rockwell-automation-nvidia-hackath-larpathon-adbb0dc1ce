@@ -1,0 +1,7 @@
+[progress] 2026-10-23T04:46:05+00:00 verifying capture inputs
+[progress] 2026-10-23T04:46:05+00:00 starting Isaac-only capture
+[progress] 2026-10-23T04:46:05.101307+00:00 capture harness started
+[progress] 2026-10-23T04:46:05.101409+00:00 before Isaac/Kit initialization
+[progress] 2026-10-23T04:46:05.324345+00:00 launching documented capture_scene.py workflow for one table-camera capture
+Starting kit application with the following args:  ['/isaac-sim/exts/isaacsim.simulation_app/isaacsim/simulation_app/simulation_app.py', '/isaac-sim/apps/isaacsim.exp.base.python.kit', '--/app/tokens/exe-path=/isaac-sim/kit', '--/persistent/app/viewport/displayOptions=3094', '--/rtx/materialDb/syncLoads=True', '--/rtx/hydra/materialSyncLoads=True', '--/omni.kit.plugin/syncUsdLoads=True', '--/app/renderer/resolution/width=1280', '--/app/renderer/resolution/height=720', '--/app/window/width=1440', '--/app/window/height=900', '--/renderer/multiGpu/enabled=True', '--/app/fastShutdown=True', '--/app/installSignalHandlers=0', '--ext-folder', '/isaac-sim/exts', '--ext-folder', '/isaac-sim/apps', '--/physics/cudaDevice=0', '--/plugins/carb.tasking.plugin/threadCount=20', '--/plugins/omni.tbb.globalcontrol/maxThreadCount=20', '--portable', '--no-window', '--/app/window/hideUi=1', '--allow-root']
+Passing the following args to the base kit application:  ['--out', '/job/out', '--camera', 'table']

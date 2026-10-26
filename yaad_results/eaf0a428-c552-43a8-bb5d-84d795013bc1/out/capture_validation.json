@@ -1,0 +1,15 @@
+{
+  "camera": "table",
+  "expected_object_count": 10,
+  "expected_resolution": [
+    3840,
+    2160
+  ],
+  "failures": [
+    "RuntimeError: missing or empty output: /job/out/world_camera.png"
+  ],
+  "outputs": {},
+  "status": "FAIL",
+  "traceback": "Traceback (most recent call last):\n  File \"<stdin>\", line 30, in <module>\nRuntimeError: missing or empty output: /job/out/world_camera.png\n",
+  "validation": "single_scene_capture"
+}
