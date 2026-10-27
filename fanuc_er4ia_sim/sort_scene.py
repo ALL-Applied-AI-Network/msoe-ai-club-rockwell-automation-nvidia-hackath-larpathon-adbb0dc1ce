@@ -14,6 +14,17 @@ import scene_config as C
 import fk
 import ik
 from cube_pose import square_yaw
+from oracle_motion_smoke import (
+    ORACLE_SOURCE,
+    ORACLE_TASK,
+    SELECTED_CUBE,
+    annotate_after_image,
+    evaluate_object_isolation,
+    evaluate_smoke_success,
+    preflight_oracle_motion,
+    validate_execution_start,
+    validate_oracle_smoke_plan,
+)
 
 
 def ease(t):
@@ -199,7 +210,9 @@ def segments(pick, home):
 
 
 def validate_plan(plan):
-    if plan.get("source") != "Cosmos3-Nano":
+    if plan.get("task") == ORACLE_TASK:
+        validate_oracle_smoke_plan(plan)
+    elif plan.get("source") != "Cosmos3-Nano":
         raise ValueError(
             "Expected a Cosmos3-Nano sort plan; run the perception pipeline first"
         )
@@ -373,10 +386,35 @@ def main():
             "No eligible picks; inspect detections.json and sort_plan.json before rendering"
         )
     state = json.loads((run / "scene_state.json").read_text())
+    oracle_smoke = plan.get("task") == ORACLE_TASK
+    progress_path = run / "execution_progress.log"
+
+    def progress(message):
+        if not oracle_smoke:
+            return
+        line = f"[oracle-smoke] {message}"
+        print(line, flush=True)
+        with progress_path.open("a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+
+    if oracle_smoke:
+        progress_path.write_text(
+            f"[oracle-smoke] validated isolated plan source={ORACLE_SOURCE} "
+            f"selected={SELECTED_CUBE}\n",
+            encoding="utf-8",
+        )
     # Resolve paths and validate before Kit changes the working directory.
     from isaacsim import SimulationApp
 
     app = SimulationApp({"headless": True})
+    oracle_preflight = None
+    before = {}
+    after = {}
+    events = []
+    motion_time = 0.0
+    wall_start = time.perf_counter()
+    execution_start_validation = None
+    robot_commands_issued = False
     try:
         import cv2
         import omni.usd
@@ -391,15 +429,24 @@ def main():
         stage = omni.usd.get_context().get_stage()
         cell.build(stage)
         wrappers = {}
-        for name, saved in state["objects"].items():
+        scene_object_names = {
+            prim.GetName()
+            for prim in stage.Traverse()
+            if prim.GetName().startswith(("SortCube", "SortCap", "SortVial"))
+            and prim.GetPath().pathString.count("/") == 2
+        }
+        object_names = scene_object_names if oracle_smoke else set(state["objects"])
+        for name in object_names:
             prim = stage.GetPrimAtPath("/World/" + name)
             if not prim.IsValid():
                 raise ValueError(f"Captured object missing: {name}")
             UsdPhysics.RigidBodyAPI(prim).CreateKinematicEnabledAttr().Set(True)
             wrapper = SingleXFormPrim("/World/" + name)
-            wrapper.set_world_pose(
-                np.array(saved["position"]), np.array(saved["orientation"])
-            )
+            saved = state["objects"].get(name)
+            if saved is not None:
+                wrapper.set_world_pose(
+                    np.array(saved["position"]), np.array(saved["orientation"])
+                )
             wrappers[name] = wrapper
         cam_paths = {
             "table": cell.TABLE_CAM_PATH,
@@ -421,6 +468,36 @@ def main():
             cam.initialize()
         arm = SingleArticulation(prim_path=C.ROBOT_PRIM, name="er4ia")
         arm.initialize()
+
+        def raw_object_poses():
+            values = {}
+            for object_name, wrapper in wrappers.items():
+                position, orientation = wrapper.get_world_pose()
+                values[object_name] = {
+                    "position": np.asarray(position, float).tolist(),
+                    "orientation": np.asarray(orientation, float).tolist(),
+                }
+            return values
+
+        if oracle_smoke:
+            execution_start_validation = validate_execution_start(
+                plan, raw_object_poses()
+            )
+            progress(
+                "pre-command scene recreation "
+                + (
+                    "PASS"
+                    if execution_start_validation["pre_command_validation_passed"]
+                    else "FAIL"
+                )
+                + f" translation_mm={execution_start_validation['translation_error_mm']}"
+                + f" rotation_deg={execution_start_validation['rotation_error_deg']}"
+            )
+            if not execution_start_validation["pre_command_validation_passed"]:
+                raise RuntimeError(
+                    "Oracle smoke pre-command scene validation failed: "
+                    + "; ".join(execution_start_validation["failures"])
+                )
         names = list(arm.dof_names)
         arm_idx = [names.index(f"J{i}") for i in range(1, 7)]
         idx = {name: i for i, name in enumerate(names)}
@@ -434,6 +511,21 @@ def main():
         q, ok = ik.solve(q, home, down, limits, tool_offset=tool)
         if not ok:
             raise RuntimeError("Home IK failed")
+        if oracle_smoke:
+            oracle_preflight = preflight_oracle_motion(
+                plan,
+                home,
+                tool,
+                limits,
+                segments(plan["picks"][0], home),
+            )
+            progress(
+                "preflight "
+                + ("PASS" if oracle_preflight["preflight_passed"] else "FAIL")
+                + " (IK endpoints and 130 mm geometric clearance)"
+            )
+            if not oracle_preflight["preflight_passed"]:
+                raise RuntimeError("Oracle smoke IK/collision-clearance preflight failed")
 
         def command(q6, jaw):
             full = arm.get_joint_positions().copy()
@@ -446,6 +538,7 @@ def main():
         full[arm_idx] = q
         for joint, value in cell.jaw_targets(C.JAW_OPEN).items():
             full[idx[joint]] = value
+        robot_commands_issued = True
         arm.set_joint_positions(full)
         for _ in range(120):
             command(q, C.JAW_OPEN)
@@ -499,10 +592,8 @@ def main():
             return values
 
         before = poses()
-        events = []
         frame = 0
         abort_reason = None
-        motion_time = 0.0
         wall_start = time.perf_counter()
         out.mkdir(parents=True, exist_ok=True)
         # Additional fixed side camera provides a clear lift/contact review.
@@ -536,22 +627,29 @@ def main():
             ]
             candidates = [name for name in wrappers if name.startswith(prefix)]
             # This association is for execution reporting only, never motion commands.
-            tracked = (
-                min(
-                    candidates,
-                    key=lambda name: np.linalg.norm(
-                        np.array(start[name]["centre"][:2]) - pick["xy"]
-                    ),
+            if oracle_smoke:
+                tracked = pick.get("oracle_object_name")
+                if tracked not in candidates:
+                    tracked = None
+            else:
+                tracked = (
+                    min(
+                        candidates,
+                        key=lambda name: np.linalg.norm(
+                            np.array(start[name]["centre"][:2]) - pick["xy"]
+                        ),
+                    )
+                    if candidates
+                    else None
                 )
-                if candidates
-                else None
-            )
             if (
                 tracked
                 and np.linalg.norm(np.array(start[tracked]["centre"][:2]) - pick["xy"])
                 > 0.04
             ):
                 tracked = None
+            if oracle_smoke and tracked != SELECTED_CUBE:
+                raise RuntimeError("Oracle smoke selected-object association failed")
             event = {
                 "detection_id": pick["detection_id"],
                 "category": pick["category"],
@@ -573,6 +671,8 @@ def main():
                 "motion_time_s": 0.0,
                 "retries": [],
                 "recoveries": [],
+                "pose_source": pick.get("pose_source"),
+                "pre_command_validation": execution_start_validation,
             }
             if "stack_level" in pick:
                 event.update(
@@ -583,7 +683,9 @@ def main():
                     place_spread_dir=pick["place_spread_dir"],
                 )
             event["initial_positions"] = start
+            stop_after_phase = False
             for name, p0, p1, duration, j0, j1, spread in segments(pick, home):
+                progress(f"phase {name} start")
                 motion_time += duration
                 event["motion_time_s"] += duration
                 spread_start = None
@@ -697,7 +799,11 @@ def main():
                         for key in wrappers
                         if (key.startswith("SortCap") or key.startswith("SortVial"))
                         and lifted[key]["centre"][2] - start[key]["centre"][2]
-                        > 1e-6
+                        > (
+                            C.DISTRACTOR_TRANSLATION_LIMIT
+                            if oracle_smoke
+                            else 1e-6
+                        )
                     ]
                     event["objects_lifted"] = [
                         key
@@ -709,6 +815,46 @@ def main():
                         f'[sort] detection {pick["detection_id"]}: lifted {event["objects_lifted"]}; pickup={event["pickup_verified"]}',
                         flush=True,
                     )
+                if oracle_smoke and name in (
+                    "lift",
+                    "carry",
+                    "lower",
+                    "release",
+                    "settle",
+                    "retreat",
+                    "home",
+                ):
+                    phase_state = poses()
+                    phase_distractor_lifts = {
+                        object_name
+                        for object_name in wrappers
+                        if object_name.startswith(("SortCap", "SortVial"))
+                        and phase_state[object_name]["centre"][2]
+                        - start[object_name]["centre"][2]
+                        > C.DISTRACTOR_TRANSLATION_LIMIT
+                    }
+                    event["distractor_lifts"] = sorted(
+                        set(event.get("distractor_lifts", []))
+                        | phase_distractor_lifts
+                    )
+                    isolation = evaluate_object_isolation(
+                        start, phase_state, [event], SELECTED_CUBE
+                    )
+                    phase_failures = []
+                    if not isolation["distractor_safety_passed"]:
+                        phase_failures.append("distractor safety violation")
+                    if not isolation["non_selected_cube_safety_passed"]:
+                        phase_failures.append("non-selected cube displacement")
+                    if name == "lift" and not event["pickup_verified"]:
+                        phase_failures.append("selected cube lift not verified")
+                    progress(
+                        f"phase {name} complete"
+                        + (f"; FAIL: {', '.join(phase_failures)}" if phase_failures else "")
+                    )
+                    if phase_failures:
+                        abort_reason = "; ".join(phase_failures)
+                        stop_after_phase = True
+                        break
             finish = poses()
             if tracked:
                 position = np.array(finish[tracked]["centre"])
@@ -752,7 +898,7 @@ def main():
                     event["stack_support_verified"] = verify_cube_stack(
                         finish, events + [event]
                     )
-                elif plan.get("task") == "defect_sort":
+                elif plan.get("task") in ("defect_sort", ORACLE_TASK):
                     placement = evaluate_defect_placement(
                         pick, position[:2], finish[tracked].get("yaw_deg", 0)
                     )
@@ -768,6 +914,9 @@ def main():
             (run / "execution_events.json").write_text(
                 json.dumps(events, indent=2) + "\n"
             )
+            if oracle_smoke and stop_after_phase:
+                progress(f"safe abort after {name}: {abort_reason}")
+                break
             if plan.get("task") == "cube_stack" and (
                 not event["placement_verified"]
                 or not event.get("stack_support_verified")
@@ -848,6 +997,35 @@ def main():
                 and report["correct_zone_placements"] == 6
                 and report["distractor_safety_passed"]
             )
+        if oracle_smoke:
+            smoke_summary = evaluate_smoke_success(
+                plan, events, before, after, oracle_preflight or {}
+            )
+            report.update(smoke_summary)
+            report.update(
+                {
+                    "oracle_pose_source": ORACLE_SOURCE,
+                    "selected_object": SELECTED_CUBE,
+                    "commanded_objects": [SELECTED_CUBE],
+                    "motion_time_s": float(motion_time),
+                    "wall_clock_time_s": float(time.perf_counter() - wall_start),
+                    "retry_count": sum(e.get("retry_count", 0) for e in events),
+                    "recovery_count": sum(
+                        e.get("recovery_count", 0) for e in events
+                    ),
+                    "retries": [r for e in events for r in e.get("retries", [])],
+                    "recoveries": [
+                        r for e in events for r in e.get("recoveries", [])
+                    ],
+                    "preflight": oracle_preflight,
+                    "pre_command_validation": execution_start_validation,
+                    "robot_commands_issued": robot_commands_issued,
+                }
+            )
+            report["task_complete"] = report["smoke_test_success"]
+            if not report["task_complete"] and abort_reason is None:
+                abort_reason = "; ".join(report["abort_conditions"])
+                report["abort_reason"] = abort_reason
         # Evaluate untouched wide-up objects only after executing the vision plan.
         wide = [
             g["name"] for g in gt["objects"] if g.get("orientation") == "wide_end_up"
@@ -866,15 +1044,78 @@ def main():
             for name in wide
         ]
         (run / "execution_report.json").write_text(json.dumps(report, indent=2) + "\n")
+        if oracle_smoke and cam is not None:
+            rgba_after = cam.get_rgba()
+            if rgba_after is None:
+                raise RuntimeError("Table camera returned no after image")
+            after_image = run / "after_table_camera.png"
+            cv2.imwrite(
+                str(after_image),
+                cv2.cvtColor(
+                    rgba_after[:, :, :3].astype(np.uint8), cv2.COLOR_RGB2BGR
+                ),
+            )
+            annotate_after_image(
+                after_image,
+                run / "camera.json",
+                report,
+                run / "after_table_camera_annotated.png",
+            )
+            progress(
+                "result "
+                + ("PASS" if report["smoke_test_success"] else "FAIL")
+                + f"; slot_error_mm={events[0].get('assigned_slot_error_mm') if events else None}"
+            )
         print(
             f'[sort] {report["verified_pickups"]}/{len(events)} pickups; {report["verified_placements"]} verified placements; {frame} frames',
             flush=True,
         )
-    except Exception:
+    except Exception as error:
         # Kit shutdown may terminate Python before the exception is displayed.
         import traceback
 
         traceback.print_exc()
+        if oracle_smoke:
+            try:
+                if "poses" in locals():
+                    after = poses()
+            except Exception:
+                after = {}
+            failure = {
+                "task": ORACLE_TASK,
+                "oracle_pose_source": ORACLE_SOURCE,
+                "selected_object": SELECTED_CUBE,
+                "commanded_objects": [SELECTED_CUBE],
+                "task_complete": False,
+                "smoke_test_success": False,
+                "abort_reason": f"{type(error).__name__}: {error}",
+                "abort_conditions": ["execution_exception"],
+                "before": before,
+                "after": after,
+                "picks": events,
+                "preflight": oracle_preflight,
+                "pre_command_validation": execution_start_validation,
+                "robot_commands_issued": robot_commands_issued,
+                "motion_time_s": float(motion_time),
+                "wall_clock_time_s": float(time.perf_counter() - wall_start),
+            }
+            failure_events = events
+            if not failure_events and execution_start_validation is not None:
+                failure_events = [
+                    {
+                        "tracked_object": SELECTED_CUBE,
+                        "pose_source": ORACLE_SOURCE,
+                        "pre_command_validation": execution_start_validation,
+                        "robot_commands_issued": robot_commands_issued,
+                    }
+                ]
+            (run / "execution_events.json").write_text(
+                json.dumps(failure_events, indent=2) + "\n", encoding="utf-8"
+            )
+            (run / "execution_report.json").write_text(
+                json.dumps(failure, indent=2) + "\n", encoding="utf-8"
+            )
+            progress(f"FAIL: {failure['abort_reason']}")
         raise
     finally:
         app.close()
