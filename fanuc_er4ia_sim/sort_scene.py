@@ -6,6 +6,7 @@ Run ./run_sort_pipeline.sh RUN_DIR to capture, perceive, plan, render and encode
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 
 import numpy as np
@@ -56,6 +57,124 @@ def verify_cube_stack(positions, entries):
     return True
 
 
+def cube_footprint_within_defect_zone(xy, colour, yaw_deg=0.0):
+    """Require the complete rotated cube footprint inside the inset zone."""
+    if colour not in C.DEFECT_ZONE_CENTERS:
+        return False
+    theta = np.deg2rad(float(yaw_deg))
+    half_extent = 0.5 * C.CUBE_EDGE * (abs(np.cos(theta)) + abs(np.sin(theta)))
+    delta = np.abs(np.asarray(xy, float) - C.DEFECT_ZONE_CENTERS[colour])
+    available = 0.5 * np.asarray(C.DEFECT_ZONE_SIZE) - C.DEFECT_ZONE_SAFE_INSET
+    return bool(np.all(delta + half_extent <= available + 1e-12))
+
+
+def evaluate_defect_placement(pick, xy, yaw_deg=0.0):
+    """Host-testable flat placement result for one assigned defect slot."""
+    assigned = np.asarray(pick.get("assigned_slot", []), float)
+    position = np.asarray(xy, float)
+    if assigned.shape != (2,) or position.shape != (2,):
+        slot_error = float("inf")
+    else:
+        slot_error = float(np.linalg.norm(position - assigned))
+    contained = cube_footprint_within_defect_zone(
+        position, pick.get("colour"), yaw_deg
+    )
+    return {
+        "placement_position_error_mm": slot_error * 1000,
+        "assigned_slot_error_mm": slot_error * 1000,
+        "correct_zone_containment": contained,
+        "correct_zone_placement": bool(
+            contained and slot_error <= C.DEFECT_SLOT_TOLERANCE + 1e-12
+        ),
+    }
+
+
+def _angle_delta_deg(a, b):
+    return abs((float(a) - float(b) + 180.0) % 360.0 - 180.0)
+
+
+def _pose_rotation_delta_deg(before_pose, after_pose):
+    before_q = np.asarray(before_pose.get("orientation", []), float)
+    after_q = np.asarray(after_pose.get("orientation", []), float)
+    if before_q.shape == (4,) and after_q.shape == (4,):
+        before_norm = np.linalg.norm(before_q)
+        after_norm = np.linalg.norm(after_q)
+        if before_norm > 0 and after_norm > 0:
+            similarity = abs(np.dot(before_q, after_q) / (before_norm * after_norm))
+            return float(np.degrees(2 * np.arccos(np.clip(similarity, 0, 1))))
+    return _angle_delta_deg(
+        after_pose.get("yaw_deg", 0), before_pose.get("yaw_deg", 0)
+    )
+
+
+def evaluate_distractor_safety(before, after, events, distractor_names):
+    """Evaluate the deferred cap/vial lift, translation and rotation contract."""
+    lifted = {
+        name
+        for event in events
+        for name in event.get("distractor_lifts", event.get("objects_lifted", []))
+        if name in distractor_names
+    }
+    displacements = []
+    for name in distractor_names:
+        if name not in before or name not in after:
+            continue
+        translation = float(
+            np.linalg.norm(
+                np.asarray(after[name]["centre"], float)
+                - np.asarray(before[name]["centre"], float)
+            )
+        )
+        rotation = _pose_rotation_delta_deg(before[name], after[name])
+        displacements.append(
+            {
+                "name": name,
+                "translation_mm": translation * 1000,
+                "rotation_deg": rotation,
+                "translation_exceeded": translation > C.DISTRACTOR_TRANSLATION_LIMIT,
+                "rotation_exceeded": rotation > C.DISTRACTOR_ROTATION_LIMIT_DEG,
+            }
+        )
+    return {
+        "distractor_grasps": sorted(lifted),
+        "distractor_displacements": displacements,
+        "distractor_safety_passed": not lifted
+        and not any(
+            row["translation_exceeded"] or row["rotation_exceeded"]
+            for row in displacements
+        ),
+    }
+
+
+def build_defect_report(plan, events, motion_time_s, wall_clock_time_s, safety):
+    """Build the Phase 1 report fields without requiring Isaac imports."""
+    classified = [e for e in events if e.get("classification_correct") is not None]
+    retries = [r for e in events for r in e.get("retries", [])]
+    recoveries = [r for e in events for r in e.get("recoveries", [])]
+    return {
+        "defect_parts_detected": len(plan.get("validated_cube_detection_ids", [])),
+        "successful_pickups": sum(bool(e.get("pickup_verified")) for e in events),
+        "correct_zone_placements": sum(
+            bool(e.get("placement_verified") and e.get("correct_zone_placement"))
+            for e in events
+        ),
+        "distractor_grasps": safety.get("distractor_grasps", []),
+        "distractor_displacements": safety.get("distractor_displacements", []),
+        "distractor_safety_passed": safety.get("distractor_safety_passed", False),
+        "classification_accuracy": (
+            sum(bool(e["classification_correct"]) for e in classified) / len(classified)
+            if classified
+            else None
+        ),
+        "motion_time_s": float(motion_time_s),
+        "wall_clock_time_s": float(wall_clock_time_s),
+        "retry_count": len(retries),
+        "recovery_count": len(recoveries),
+        "retries": retries,
+        "recoveries": recoveries,
+    }
+
+
 def segments(pick, home):
     p = np.array([*pick["xy"], pick["pick_z"]])
     d = np.array([*pick["place_xy"], pick["place_z"]])
@@ -88,6 +207,74 @@ def validate_plan(plan):
         raise ValueError(
             "Plan uses a different jaw opening; regenerate capture and perception"
         )
+    if plan.get("task") == "defect_sort":
+        picks = plan.get("picks", [])
+        if not plan.get("defect_sort_ready") or len(picks) != 6:
+            raise ValueError("Defect sort requires exactly six validated cube picks")
+        if any(p.get("category") != "cube" for p in picks):
+            raise ValueError("Defect plan may contain cubes only; caps/vials are distractors")
+        detection_ids = [p.get("detection_id") for p in picks]
+        if len(set(detection_ids)) != 6:
+            raise ValueError("Defect plan repeats a cube detection ID")
+        if set(detection_ids) != set(plan.get("validated_cube_detection_ids", [])):
+            raise ValueError("Defect picks do not match validated cube detections")
+        observed_ids = {
+            o.get("detection_id")
+            for o in plan.get("observations", [])
+            if o.get("category") == "cube"
+            and o.get("eligible")
+            and o.get("disposition") == "validated_defect_part"
+        }
+        if set(detection_ids) != observed_ids:
+            raise ValueError("Defect picks contain an unvalidated detection ID")
+        object_ids = [p.get("object_id") for p in picks]
+        if len(object_ids) != 6 or None in object_ids or len(set(object_ids)) != 6:
+            raise ValueError("Defect plan repeats an object ID")
+        slots = [tuple(p.get("assigned_slot", [])) for p in picks]
+        if any(len(slot) != 2 for slot in slots) or len(set(slots)) != 6:
+            raise ValueError("Every defect cube requires a unique target slot")
+        expected_slots = {
+            tuple(slot) for colour in C.DEFECT_TARGET_SLOTS for slot in C.DEFECT_TARGET_SLOTS[colour]
+        }
+        if set(slots) != expected_slots:
+            raise ValueError("Defect plan target slots differ from the audited slots")
+        for p in picks:
+            colour = p.get("colour")
+            if colour not in C.DEFECT_CLASS_BY_COLOUR:
+                raise ValueError("Unknown cube colour in defect plan")
+            if p.get("defect_class") != C.DEFECT_CLASS_BY_COLOUR[colour]:
+                raise ValueError("Wrong defect class for cube colour")
+            if p.get("expected_colour") != colour or p.get(
+                "expected_defect_class"
+            ) != C.DEFECT_CLASS_BY_COLOUR[colour]:
+                raise ValueError("Wrong expected colour/defect class metadata")
+            if tuple(p["assigned_slot"]) not in {
+                tuple(slot) for slot in C.DEFECT_TARGET_SLOTS[colour]
+            } or not np.allclose(p.get("place_xy"), p["assigned_slot"]):
+                raise ValueError("Cube is assigned to the wrong colour zone")
+            if not cube_footprint_within_defect_zone(p["assigned_slot"], colour):
+                raise ValueError("Assigned cube footprint is not contained in its zone")
+            if float(p.get("classification_confidence", 0)) < C.CUBE_CLASSIFICATION_MIN_CONFIDENCE:
+                raise ValueError("Cube classification confidence is below threshold")
+            if float(p.get("pose_confidence", 0)) < C.CUBE_POSE_MIN_CONFIDENCE:
+                raise ValueError("Cube pose confidence is below threshold")
+            if float(p.get("pose_fit_iou", 0)) < C.CUBE_POSE_FIT_MIN_IOU:
+                raise ValueError("Cube localization/pose fit is below threshold")
+            if not np.isclose(p.get("pick_z", -1), C.SURFACE_DZ + C.CUBE_TIP_CLEARANCE):
+                raise ValueError("Invalid flat cube pick height")
+            if not np.isclose(p.get("place_z", -1), C.SURFACE_DZ + C.CUBE_TIP_CLEARANCE):
+                raise ValueError("Invalid flat cube placement height")
+            if not np.isclose(
+                p.get("expected_centre_z", -1), C.SURFACE_DZ + 0.5 * C.CUBE_EDGE
+            ):
+                raise ValueError("Flat cube centre height must be half a cube edge")
+        safety = plan.get("distractor_safety", {})
+        if (
+            not safety.get("unintended_lift_forbidden")
+            or not np.isclose(safety.get("max_translation_m", -1), C.DISTRACTOR_TRANSLATION_LIMIT)
+            or not np.isclose(safety.get("max_rotation_deg", -1), C.DISTRACTOR_ROTATION_LIMIT_DEG)
+        ):
+            raise ValueError("Defect plan has invalid distractor safety thresholds")
     if plan.get("task") == "cube_stack" and plan["picks"]:
         if [p.get("colour") for p in plan["picks"]] != list(C.CUBE_STACK_COLOURS):
             raise ValueError(
@@ -315,6 +502,8 @@ def main():
         events = []
         frame = 0
         abort_reason = None
+        motion_time = 0.0
+        wall_start = time.perf_counter()
         out.mkdir(parents=True, exist_ok=True)
         # Additional fixed side camera provides a clear lift/contact review.
         side = None
@@ -370,6 +559,20 @@ def main():
                 "pickup_verified": False,
                 "placement_verified": False,
                 "trajectory_ik_failures": 0,
+                "predicted_colour": pick.get("colour"),
+                "expected_colour": None,
+                "predicted_defect_class": pick.get("defect_class"),
+                "expected_defect_class": None,
+                "classification_correct": None,
+                "position_error_mm": None,
+                "yaw_error_deg_mod90": None,
+                "placement_position_error_mm": None,
+                "assigned_slot_error_mm": None,
+                "correct_zone_containment": None,
+                "correct_zone_placement": False,
+                "motion_time_s": 0.0,
+                "retries": [],
+                "recoveries": [],
             }
             if "stack_level" in pick:
                 event.update(
@@ -381,6 +584,8 @@ def main():
                 )
             event["initial_positions"] = start
             for name, p0, p1, duration, j0, j1, spread in segments(pick, home):
+                motion_time += duration
+                event["motion_time_s"] += duration
                 spread_start = None
                 if spread is not None and name in ("approach", "carry"):
                     r, _ = fk.fk(q)
@@ -412,6 +617,19 @@ def main():
                             iters=500,
                             damping=0.02,
                         )
+                        event["retries"].append(
+                            {
+                                "reason": f"primary_ik_failed:{name}",
+                                "outcome": "recovered" if ok else "failed",
+                            }
+                        )
+                        if ok:
+                            event["recoveries"].append(
+                                {
+                                    "reason": f"fallback_ik:{name}",
+                                    "outcome": "recovered",
+                                }
+                            )
                     r, actual = fk.tool_pose(q, tool)
                     aligned = (
                         direction is None
@@ -474,6 +692,13 @@ def main():
                     )
                 if name == "lift":
                     lifted = poses()
+                    event["distractor_lifts"] = [
+                        key
+                        for key in wrappers
+                        if (key.startswith("SortCap") or key.startswith("SortVial"))
+                        and lifted[key]["centre"][2] - start[key]["centre"][2]
+                        > 1e-6
+                    ]
                     event["objects_lifted"] = [
                         key
                         for key in wrappers
@@ -494,7 +719,7 @@ def main():
                     C.TABLE_TOP_Z
                     + C.SURFACE_DZ
                     + {
-                        "cube": 1.5 * C.CUBE_EDGE,
+                        "cube": 0.5 * C.CUBE_EDGE,
                         "cap": C.CAP_HEIGHT / 2,
                         "vial": C.VIAL_RADIUS,
                     }[pick["category"]]
@@ -527,6 +752,18 @@ def main():
                     event["stack_support_verified"] = verify_cube_stack(
                         finish, events + [event]
                     )
+                elif plan.get("task") == "defect_sort":
+                    placement = evaluate_defect_placement(
+                        pick, position[:2], finish[tracked].get("yaw_deg", 0)
+                    )
+                    event.update(placement)
+                    event["placement_verified"] = bool(
+                        event["pickup_verified"]
+                        and placement["correct_zone_placement"]
+                        and abs(position[2] - expected_z) < 0.0015
+                    )
+            event["retry_count"] = len(event["retries"])
+            event["recovery_count"] = len(event["recoveries"])
             events.append(event)
             (run / "execution_events.json").write_text(
                 json.dumps(events, indent=2) + "\n"
@@ -539,6 +776,47 @@ def main():
                 print(f"[sort] {abort_reason}", flush=True)
                 break
         after = poses()
+        gt = json.loads((run / "ground_truth.json").read_text())
+        gt_by_name = {row["name"]: row for row in gt.get("objects", [])}
+        for event, pick in zip(events, plan["picks"]):
+            actual = gt_by_name.get(event.get("tracked_object"))
+            if not actual or event.get("category") != "cube":
+                continue
+            expected_colour = actual.get("colour")
+            event["expected_colour"] = expected_colour
+            event["expected_defect_class"] = C.DEFECT_CLASS_BY_COLOUR.get(
+                expected_colour
+            )
+            event["classification_correct"] = bool(
+                event.get("predicted_colour") == expected_colour
+                and event.get("predicted_defect_class")
+                == event.get("expected_defect_class")
+            )
+            event["position_error_mm"] = float(
+                np.linalg.norm(np.asarray(pick["xy"]) - actual["xyz"][:2]) * 1000
+            )
+            if "yaw_deg" in actual and "yaw_deg" in pick:
+                event["yaw_error_deg_mod90"] = abs(
+                    square_yaw(pick["yaw_deg"] - actual["yaw_deg"])
+                )
+        distractor_names = {
+            name
+            for name in wrappers
+            if name.startswith("SortCap") or name.startswith("SortVial")
+        }
+        distractor_safety = evaluate_distractor_safety(
+            before, after, events, distractor_names
+        )
+        defect_summary = build_defect_report(
+            plan,
+            events,
+            motion_time,
+            time.perf_counter() - wall_start,
+            distractor_safety,
+        )
+        (run / "execution_events.json").write_text(
+            json.dumps(events, indent=2) + "\n"
+        )
         report = {
             "before": before,
             "after": after,
@@ -562,8 +840,15 @@ def main():
             "verified_pickups": sum(e["pickup_verified"] for e in events),
             "verified_placements": sum(e["placement_verified"] for e in events),
         }
+        if plan.get("task") == "defect_sort":
+            report.update(defect_summary)
+            report["task_complete"] = bool(
+                report["task_complete"]
+                and report["successful_pickups"] == 6
+                and report["correct_zone_placements"] == 6
+                and report["distractor_safety_passed"]
+            )
         # Evaluate untouched wide-up objects only after executing the vision plan.
-        gt = json.loads((run / "ground_truth.json").read_text())
         wide = [
             g["name"] for g in gt["objects"] if g.get("orientation") == "wide_end_up"
         ]

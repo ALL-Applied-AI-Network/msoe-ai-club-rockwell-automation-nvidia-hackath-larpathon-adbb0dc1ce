@@ -52,7 +52,9 @@ class CubePoseTests(unittest.TestCase):
     def test_perspective_rotations_drive_wrist_and_return_to_aligned_stack(self):
         objects = self.inventory()
         plan = build_plan(
-            {"objects": objects, "coordinate_convention": "unit"}, self.cam
+            {"objects": objects, "coordinate_convention": "unit"},
+            self.cam,
+            task="cube_stack",
         )
         validate_plan(plan)
         self.assertEqual(len(plan["picks"]), 6)
@@ -78,7 +80,9 @@ class CubePoseTests(unittest.TestCase):
             objects = self.inventory()
             objects[0].update(changes)
             plan = build_plan(
-                {"objects": objects, "coordinate_convention": "unit"}, self.cam
+                {"objects": objects, "coordinate_convention": "unit"},
+                self.cam,
+                task="cube_stack",
             )
             self.assertFalse(plan["stack_ready"])
             self.assertEqual(plan["picks"], [])
@@ -103,7 +107,9 @@ class CubePoseTests(unittest.TestCase):
 
     def test_executor_rejects_tampered_wrist(self):
         plan = build_plan(
-            {"objects": self.inventory(), "coordinate_convention": "unit"}, self.cam
+            {"objects": self.inventory(), "coordinate_convention": "unit"},
+            self.cam,
+            task="cube_stack",
         )
         plan["picks"][0]["spread_dir"] = [1, 0, 0]
         with self.assertRaises(ValueError):
@@ -165,6 +171,8 @@ class CubePoseTests(unittest.TestCase):
             self.assertEqual(
                 observed["pose_source"], "Cosmos_reports_calibrated_image_pose"
             )
+            self.assertEqual(observed["classification_confidence"], 0.9)
+            self.assertEqual(observed["pose_fit_iou"], 0.95)
             self.assertTrue((root / "cube_pose_crops/cube_0_measurement.json").exists())
             np.testing.assert_allclose(
                 observed["pose_world"]["position_m"],

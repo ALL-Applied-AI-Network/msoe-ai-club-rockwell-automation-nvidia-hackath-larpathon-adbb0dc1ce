@@ -277,8 +277,9 @@ CAP_PLUG_LENGTH = CAP_HEIGHT - CAP_FLANGE_THICK
 CAP_PLUG_BASE_RADIUS = 0.930 * 0.0254 / 2
 CAP_PLUG_TIP_RADIUS = 0.820 * 0.0254 / 2
 CAP_ORIENTATIONS = ["narrow_end_up", "narrow_end_up"]
-# Hackathon task: all six cubes form one tower, bottom to top.
-SORT_TASK = "cube_stack"
+# Dataset 3 Phase 1 default: six cubes are placed flat into colour-coded defect
+# zones.  The historical tower remains available as the separate cube_stack mode.
+SORT_TASK = "defect_sort"
 CUBE_STACK_XY = (0.28, 0.10)
 CUBE_STACK_COLOURS = ("yellow", "yellow", "blue", "blue", "red", "red")
 CUBE_STACK_SITE_TOLERANCE = CUBE_EDGE / 3
@@ -286,6 +287,47 @@ CUBE_STACK_LAYER_TOLERANCE = (
     CUBE_EDGE / 4
 )  # adjacent centres retain at least 75% overlap per axis
 CUBE_LAYOUT_SEED = 20261009
+
+# Audited Dataset 3 defect-sorting contract.  These names are local semantic
+# names only; they deliberately do not claim organizer placement.yaml IDs.
+DEFECT_CLASS_BY_COLOUR = {
+    "red": "Defect Class A",
+    "blue": "Defect Class B",
+    "yellow": "Defect Class C",
+}
+DEFECT_ZONE_SIZE = (0.080, 0.060)
+DEFECT_ZONE_SAFE_INSET = 0.010
+DEFECT_ZONE_CENTERS = {
+    "red": (0.200, 0.320),
+    "blue": (0.300, 0.320),
+    "yellow": (0.400, 0.320),
+}
+DEFECT_TARGET_SLOTS = {
+    "red": [(0.185, 0.320), (0.215, 0.320)],
+    "blue": [(0.285, 0.320), (0.315, 0.320)],
+    "yellow": [(0.385, 0.320), (0.415, 0.320)],
+}
+DEFECT_EXPECTED_COUNTS = {colour: 2 for colour in DEFECT_CLASS_BY_COLOUR}
+CUBE_CLASSIFICATION_MIN_CONFIDENCE = 0.80
+CUBE_POSE_MIN_CONFIDENCE = 0.80
+CUBE_POSE_FIT_MIN_IOU = 0.75
+DEFECT_SLOT_TOLERANCE = 0.005
+DISTRACTOR_TRANSLATION_LIMIT = 0.002
+DISTRACTOR_ROTATION_LIMIT_DEG = 5.0
+# Approximately 0.057 degrees. This tolerance applies only to passive PhysX
+# settling during scene validation; it must never excuse commanded robot motion.
+PASSIVE_JOINT_DRIFT_TOLERANCE_RAD = 1e-3
+SHOW_DEFECT_ZONES = True
+DEFECT_ZONE_PRIM_ROOT = "/World/DefectZones"
+DEFECT_ZONE_MARKER_Z_OFFSET = 0.0005
+DEFECT_ZONE_LINE_WIDTH = 0.003
+DEFECT_SLOT_MARKER_HALF_LENGTH = 0.006
+DEFECT_SLOT_LINE_WIDTH = 0.002
+DEFECT_ZONE_DISPLAY_COLOURS = {
+    "red": (0.90, 0.04, 0.03),
+    "blue": (0.03, 0.18, 0.95),
+    "yellow": (0.95, 0.72, 0.02),
+}
 
 
 def hackathon_cubes(seed):

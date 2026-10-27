@@ -25,16 +25,18 @@ def _find_nano():
         if not (checkpoint / "config.json").is_file():
             raise SystemExit(f"Model snapshot is missing config.json: {checkpoint}")
         return checkpoint
-    cache_home = Path(
-        os.environ.get(
-            "HF_HOME",
-            str(
-                Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache")))
-                / "huggingface"
-            ),
-        )
-    ).expanduser()
-    hub = Path(os.environ.get("HF_HUB_CACHE", str(cache_home / "hub"))).expanduser()
+    selected_hub = os.environ.get("HF_HUB_CACHE")
+    if selected_hub:
+        hub = Path(selected_hub).expanduser()
+    else:
+        selected_home = os.environ.get("HF_HOME")
+        if selected_home:
+            cache_home = Path(selected_home).expanduser()
+        else:
+            xdg_cache = os.environ.get("XDG_CACHE_HOME")
+            cache_root = Path(xdg_cache).expanduser() if xdg_cache else Path.home() / ".cache"
+            cache_home = cache_root / "huggingface"
+        hub = cache_home / "hub"
     base = hub / "models--nvidia--Cosmos3-Nano"
     snapshots = sorted((base / "snapshots").glob("*/config.json"))
     if not snapshots:
@@ -140,6 +142,25 @@ center is the centre of the whole visible cube silhouette.
 bbox is [x_min,y_min,x_max,y_max]. Use category cube, and colour yellow, blue,
 red, or unknown if ambiguous. Up to 12 cubes may be present."""
 
+DEFECT_SORT_PROMPT = """You are the vision system for a robot sorting defect cubes.
+Report every separate loose object of these categories on the white tabletop:
+small plastic cubes, yellow circular caps, and clear tubes/vials. Cubes may be
+red, blue, or yellow. Caps and vials are distractors, but must still be reported
+once each so the planner can explicitly ignore them. Never label a round cap or
+cylindrical vial as a cube. Do not invent missing objects or force a count.
+For every cube, classify colour from its visible surface and include a
+classification_confidence from 0 to 1. Use colour unknown and low confidence
+when ambiguous. Return ONLY JSON in this schema:
+{"objects":[{"label":"blue cube","category":"cube","colour":"blue",
+"classification_confidence":0.93,"center":[0.4,0.5],
+"bbox":[0.39,0.49,0.41,0.51],"graspable":true},
+{"label":"yellow cap","category":"cap","colour":"yellow",
+"center":[0.5,0.6],"bbox":[0.48,0.58,0.52,0.62],"graspable":true},
+{"label":"clear vial","category":"vial","colour":"clear",
+"center":[0.6,0.5],"bbox":[0.55,0.48,0.65,0.52],"graspable":true}]}.
+Coordinates are normalized 0..1, x left to right and y top to bottom. Report
+each visible object exactly once. Up to 12 objects may be present."""
+
 
 def audit_stack_colours(model, processor, image_path, parsed, run):
     """Revisit missing colours in full and local views; no ground truth input."""
@@ -172,7 +193,8 @@ def audit_stack_colours(model, processor, image_path, parsed, run):
     unique = []
     for obj in parsed["objects"]:
         if obj.get("center") is not None and any(
-            o.get("colour") == obj.get("colour")
+            o.get("category") == obj.get("category")
+            and o.get("colour") == obj.get("colour")
             and o.get("center") is not None
             and np.linalg.norm((np.array(obj["center"]) - o["center"]) * [W, H]) < 24
             for o in unique
@@ -282,12 +304,15 @@ Use unknown and low confidence if the geometry is ambiguous."""
                             graspable=True,
                             detail_crop=str(path.relative_to(run)),
                             category_confidence=answer["confidence"],
+                            classification_confidence=answer["confidence"],
                             localisation_source="image_blob_confirmed_by_Cosmos",
                         )
                     )
             replacements = confirmed
         parsed["objects"] = [
-            o for o in parsed["objects"] if o.get("colour") != colour
+            o
+            for o in parsed["objects"]
+            if not (o.get("category") == "cube" and o.get("colour") == colour)
         ] + replacements
     return parsed
 
@@ -302,7 +327,8 @@ Check that the object is a cube of the expected colour. If inconsistent or
 ambiguous, report unknown and low confidence. Square yaw is modulo 90 degrees;
 roll and pitch are constrained by the cube resting upright on the table.
 Return only JSON: {"category":"cube","colour":"blue","yaw_deg":14.2,
-"pose_confidence":0.9,"reason":"visible cube geometry and colour"}.
+"classification_confidence":0.9,"pose_confidence":0.9,
+"reason":"visible cube geometry and colour"}.
 Use the measured yaw value from this query, not the example value above."""
 
 
@@ -369,12 +395,17 @@ def inspect_cube_poses(model, processor, image_path, parsed, run):
         try:
             reported = float(answer["yaw_deg"])
             conf = float(answer.get("pose_confidence", 0))
+            classification_conf = float(
+                answer.get("classification_confidence", conf)
+            )
             valid = (
                 answer.get("category") == "cube"
                 and answer.get("colour") == obj["colour"]
                 and np.isfinite(reported)
                 and np.isfinite(conf)
+                and np.isfinite(classification_conf)
                 and 0.8 <= conf <= 1
+                and 0.8 <= classification_conf <= 1
                 and abs(square_yaw(reported - yaw)) <= 3
             )
             if not valid:
@@ -393,6 +424,8 @@ def inspect_cube_poses(model, processor, image_path, parsed, run):
             obj.update(
                 top_edge_endpoints=(np.array(points) / [W, H]).tolist(),
                 pose_confidence=conf,
+                classification_confidence=classification_conf,
+                pose_fit_iou=quality,
                 cosmos_reported_yaw_deg=reported,
                 pose_world=dict(
                     position_m=measurement["position_world_m"],
@@ -777,6 +810,11 @@ if __name__ == "__main__":
         action="store_true",
         help="identify coloured cubes for the hackathon tower task",
     )
+    ap.add_argument(
+        "--defect-sort",
+        action="store_true",
+        help="identify six defect cubes plus cap/vial distractors",
+    )
     a = ap.parse_args()
 
     run = Path(a.run)
@@ -786,6 +824,8 @@ if __name__ == "__main__":
         prompt, stem, budget = INVENTORY_PROMPT, "inventory", 600
     elif a.verify:
         prompt, stem, budget = VERIFY_PROMPT, "verify", 600
+    elif a.defect_sort:
+        prompt, stem, budget = DEFECT_SORT_PROMPT, "detections", 4500
     elif a.stack_cubes:
         prompt, stem, budget = STACK_PROMPT, "detections", 3500
     elif a.sort:
@@ -817,7 +857,12 @@ if __name__ == "__main__":
         print(raw[:800])
         sys.exit(1)
     parsed = canonicalise(parsed)
-    if a.stack_cubes:
+    if a.defect_sort:
+        parsed = audit_stack_colours(model, processor, img, parsed, run)
+        parsed = inspect_cube_poses(model, processor, img, parsed, run)
+        parsed["model"] = "Cosmos3-Nano"
+        parsed["task"] = "defect_sort"
+    elif a.stack_cubes:
         parsed = audit_stack_colours(model, processor, img, parsed, run)
         parsed = inspect_cube_poses(model, processor, img, parsed, run)
         parsed["model"] = "Cosmos3-Nano"

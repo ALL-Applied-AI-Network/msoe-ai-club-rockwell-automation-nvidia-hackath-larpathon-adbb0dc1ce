@@ -648,6 +648,8 @@ def build(stage, with_objects=True):
         add_mat_print(stage)
     if C.SHOW_BACKDROP:
         add_backdrop(stage)
+    if C.SHOW_DEFECT_ZONES and C.SORT_TASK == "defect_sort":
+        add_defect_zone_markers(stage)
     if with_objects:
         if C.SHOW_FIXTURE:
             add_props(stage)
@@ -833,6 +835,84 @@ def add_sort_bins(stage):
             floor_t=cfg["floor_t"],
             mat_name=cfg["mat"],
         )
+
+
+def _visual_curve(stage, path, points, counts, width, colour):
+    """Create a display-only linear curve with no physics or collision APIs."""
+    curve = UsdGeom.BasisCurves.Define(stage, path)
+    curve.CreateTypeAttr(UsdGeom.Tokens.linear)
+    curve.CreateWrapAttr(UsdGeom.Tokens.nonperiodic)
+    curve.CreatePointsAttr([Gf.Vec3f(*point) for point in points])
+    curve.CreateCurveVertexCountsAttr(counts)
+    curve.CreateWidthsAttr([width] * len(points))
+    curve.SetWidthsInterpolation(UsdGeom.Tokens.vertex)
+    curve.CreateDisplayColorAttr([Gf.Vec3f(*colour)])
+    return curve.GetPrim()
+
+
+def add_defect_zone_markers(stage):
+    """Draw non-colliding zone outlines and slot crosses on the table."""
+    UsdGeom.Xform.Define(stage, C.DEFECT_ZONE_PRIM_ROOT)
+    z = C.TABLE_TOP_Z + C.SURFACE_DZ + C.DEFECT_ZONE_MARKER_Z_OFFSET
+    half_x, half_y = (dimension / 2 for dimension in C.DEFECT_ZONE_SIZE)
+    for colour, (x, y) in C.DEFECT_ZONE_CENTERS.items():
+        zone_path = f"{C.DEFECT_ZONE_PRIM_ROOT}/{colour.capitalize()}"
+        zone = UsdGeom.Xform.Define(stage, zone_path).GetPrim()
+        zone.SetCustomDataByKey("colour", str(colour))
+        zone.SetCustomDataByKey(
+            "defectClass", str(C.DEFECT_CLASS_BY_COLOUR[colour])
+        )
+        zone.SetCustomDataByKey("centerXY", Gf.Vec2d(x, y))
+        zone.SetCustomDataByKey("sizeXY", Gf.Vec2d(*C.DEFECT_ZONE_SIZE))
+        marker_colour = C.DEFECT_ZONE_DISPLAY_COLOURS[colour]
+        boundary = [
+            (x - half_x, y - half_y, z),
+            (x + half_x, y - half_y, z),
+            (x + half_x, y + half_y, z),
+            (x - half_x, y + half_y, z),
+            (x - half_x, y - half_y, z),
+        ]
+        boundary_prim = _visual_curve(
+            stage,
+            f"{zone_path}/Boundary",
+            boundary,
+            [len(boundary)],
+            C.DEFECT_ZONE_LINE_WIDTH,
+            marker_colour,
+        )
+        boundary_prim.SetCustomDataByKey("markerKind", "zone_boundary")
+        boundary_prim.SetCustomDataByKey("colour", str(colour))
+        boundary_prim.SetCustomDataByKey(
+            "defectClass", str(C.DEFECT_CLASS_BY_COLOUR[colour])
+        )
+        boundary_prim.SetCustomDataByKey("centerXY", Gf.Vec2d(x, y))
+        boundary_prim.SetCustomDataByKey(
+            "sizeXY", Gf.Vec2d(*C.DEFECT_ZONE_SIZE)
+        )
+        UsdGeom.Xform.Define(stage, f"{zone_path}/Slots")
+        for index, (slot_x, slot_y) in enumerate(C.DEFECT_TARGET_SLOTS[colour]):
+            half = C.DEFECT_SLOT_MARKER_HALF_LENGTH
+            points = [
+                (slot_x - half, slot_y, z),
+                (slot_x + half, slot_y, z),
+                (slot_x, slot_y - half, z),
+                (slot_x, slot_y + half, z),
+            ]
+            slot = _visual_curve(
+                stage,
+                f"{zone_path}/Slots/Slot{index}",
+                points,
+                [2, 2],
+                C.DEFECT_SLOT_LINE_WIDTH,
+                marker_colour,
+            )
+            slot.SetCustomDataByKey("markerKind", "target_slot")
+            slot.SetCustomDataByKey("colour", str(colour))
+            slot.SetCustomDataByKey(
+                "defectClass", str(C.DEFECT_CLASS_BY_COLOUR[colour])
+            )
+            slot.SetCustomDataByKey("slotIndex", int(index))
+            slot.SetCustomDataByKey("slotXY", Gf.Vec2d(slot_x, slot_y))
 
 
 def add_bin(stage):

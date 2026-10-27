@@ -97,23 +97,58 @@ def refine_cap(img, cam, obj, seed):
 def build_plan(det, cam, img=None, task=None):
     """No ground-truth argument: object eligibility and poses come from vision."""
     task = task or C.SORT_TASK
-    if task not in ("sort", "cube_stack"):
+    if task not in ("sort", "cube_stack", "defect_sort"):
         raise ValueError("Unknown task")
     convention, divisor = detect_coord_convention(det, cam.W, cam.H)
     if det.get("coordinate_convention") == "unit":
         convention, divisor = "unit", 1.0
     pixels = make_as_pixels(convention, divisor, cam.W, cam.H)
     observations, rejected = [], []
+    seen_detection_ids, seen_object_ids = set(), set()
     for i, original in enumerate(det.get("objects", [])):
         obj = dict(original)
-        obj["detection_id"] = i
+        obj["detection_id"] = original.get("detection_id", i)
         cat = obj.get("category")
         reason = None
-        if task == "cube_stack" and cat != "cube":
-            obj.update(eligible=False, skip_reason="not_a_cube")
+        if task == "defect_sort" and cat in ("cap", "vial"):
+            obj.update(
+                eligible=False,
+                disposition="ignored_distractor",
+                skip_reason="ignored_distractor",
+            )
             observations.append(obj)
             rejected.append(obj)
             continue
+        if task == "defect_sort" and cat != "cube":
+            obj.update(
+                eligible=False,
+                disposition="invalid_detection",
+                skip_reason="unknown_category",
+            )
+            observations.append(obj)
+            rejected.append(obj)
+            continue
+        if task == "cube_stack" and cat != "cube":
+            obj.update(eligible=False, disposition="ignored_distractor", skip_reason="not_a_cube")
+            observations.append(obj)
+            rejected.append(obj)
+            continue
+        try:
+            duplicate_detection_id = obj["detection_id"] in seen_detection_ids
+            seen_detection_ids.add(obj["detection_id"])
+        except TypeError:
+            duplicate_detection_id = True
+        object_id = obj.get("object_id")
+        if task == "defect_sort" and object_id is None:
+            object_id = f'cube-detection-{obj["detection_id"]}'
+            obj["object_id"] = object_id
+        duplicate_object_id = False
+        if object_id is not None:
+            try:
+                duplicate_object_id = object_id in seen_object_ids
+                seen_object_ids.add(object_id)
+            except TypeError:
+                duplicate_object_id = True
         try:
             uv = np.array(pixels(obj["center"]), float)
             if (
@@ -193,8 +228,14 @@ def build_plan(det, cam, img=None, task=None):
                 obj["jaw_half"] = C.VIAL_RADIUS
             else:
                 obj["colour"] = str(obj.get("colour", "unknown")).lower()
-                if task == "cube_stack" and obj["colour"] not in C.CUBE_STACK_COLOURS:
+                if task in ("cube_stack", "defect_sort") and obj["colour"] not in C.DEFECT_CLASS_BY_COLOUR:
                     reason = "cube_colour_unknown"
+                if task == "defect_sort":
+                    obj["classification_confidence"] = confidence(
+                        obj.get("classification_confidence", obj.get("category_confidence"))
+                    )
+                    if obj["classification_confidence"] < C.CUBE_CLASSIFICATION_MIN_CONFIDENCE:
+                        reason = "cube_classification_low_confidence"
                 if img is not None:
                     local_det = dict(obj, center=[uv[0] / cam.W, uv[1] / cam.H])
                     u, v, method, _ = refine_centre(
@@ -205,18 +246,28 @@ def build_plan(det, cam, img=None, task=None):
                         reason = "localisation_uncertain"
                     else:
                         xy = cam.to_plane(u, v, z=cam.table_z + h)[:2]
-                if task == "cube_stack":
+                if task in ("cube_stack", "defect_sort"):
                     try:
                         yaw = edge_pose(cam, obj.get("top_edge_endpoints"))
                         obj["cosmos_yaw_deg"] = yaw
-                        if confidence(obj.get("pose_confidence")) < 0.8:
+                        if confidence(obj.get("pose_confidence")) < C.CUBE_POSE_MIN_CONFIDENCE:
                             reason = "cube_pose_low_confidence"
+                        measurement = obj.get("image_pose_measurement") or {}
+                        fit = confidence(
+                            obj.get(
+                                "pose_fit_iou",
+                                obj.get("pose_silhouette_iou", measurement.get("silhouette_iou")),
+                            )
+                        )
                         if img is not None:
                             xy, yaw, fit = refine_pose(img, cam, obj, xy, yaw)
                             obj["pose_silhouette_iou"] = fit
                             obj["pose_refinement"] = "image_only_bounded_silhouette_fit"
-                            if fit < 0.75:
-                                reason = "cube_pose_fit_uncertain"
+                        obj["pose_fit_iou"] = fit
+                        if task == "defect_sort" and fit < C.CUBE_POSE_FIT_MIN_IOU:
+                            reason = "cube_pose_fit_uncertain"
+                        elif img is not None and fit < C.CUBE_POSE_FIT_MIN_IOU:
+                            reason = "cube_pose_fit_uncertain"
                         obj["yaw_deg"] = yaw
                         theta = np.deg2rad(yaw)
                         obj["spread_dir"] = [
@@ -243,9 +294,14 @@ def build_plan(det, cam, img=None, task=None):
                 for o in observations
             ):
                 reason = "duplicate_detection"
+            if duplicate_detection_id:
+                reason = "duplicate_detection_id"
+            if duplicate_object_id:
+                reason = "duplicate_object_id"
         except (TypeError, ValueError, KeyError, IndexError):
             reason = "invalid_detection"
         obj["eligible"] = reason is None
+        obj["disposition"] = "validated_defect_part" if reason is None and task == "defect_sort" else ("eligible" if reason is None else "rejected")
         obj["skip_reason"] = reason
         observations.append(obj)
         if reason:
@@ -257,6 +313,9 @@ def build_plan(det, cam, img=None, task=None):
     caps = [o for o in eligible if o["category"] == "cap"]
     picks = []
     stack_ready = False
+    defect_sort_ready = False
+    validation_errors = []
+    validated_detection_ids = []
     if task == "cube_stack":
         from collections import Counter
 
@@ -286,6 +345,59 @@ def build_plan(det, cam, img=None, task=None):
                 o.update(eligible=False, skip_reason="incomplete_cube_colour_set")
                 rejected.append(o)
         # Caps and tubes are distractors for this task, never grasp targets.
+        vials, caps = [], []
+    elif task == "defect_sort":
+        from collections import Counter
+
+        all_cubes = [o for o in observations if o.get("category") == "cube"]
+        invalid_non_distractors = [
+            o
+            for o in observations
+            if o.get("category") not in ("cap", "vial") and not o.get("eligible")
+        ]
+        counts = Counter(o.get("colour") for o in cubes)
+        if len(all_cubes) != 6:
+            validation_errors.append("expected_exactly_six_cube_detections")
+        if invalid_non_distractors:
+            validation_errors.append("one_or_more_cube_detections_failed_validation")
+        if counts != Counter(C.DEFECT_EXPECTED_COUNTS):
+            validation_errors.append("expected_exactly_two_cubes_per_colour")
+        if len({o["detection_id"] for o in cubes}) != len(cubes):
+            validation_errors.append("duplicate_detection_id")
+        object_ids = [o.get("object_id") for o in cubes]
+        if len(object_ids) != 6 or len(set(object_ids)) != 6:
+            validation_errors.append("duplicate_object_id")
+        defect_sort_ready = not validation_errors and len(cubes) == 6
+        if defect_sort_ready:
+            for colour in C.DEFECT_CLASS_BY_COLOUR:
+                colour_cubes = sorted(
+                    (o for o in cubes if o["colour"] == colour),
+                    key=lambda o: (o["xy"][0], o["xy"][1], str(o["detection_id"])),
+                )
+                for o, slot in zip(colour_cubes, C.DEFECT_TARGET_SLOTS[colour]):
+                    picks.append(
+                        dict(
+                            o,
+                            defect_class=C.DEFECT_CLASS_BY_COLOUR[colour],
+                            expected_colour=colour,
+                            expected_defect_class=C.DEFECT_CLASS_BY_COLOUR[colour],
+                            assigned_slot=list(slot),
+                            place_xy=list(slot),
+                            place_z=C.SURFACE_DZ + C.CUBE_TIP_CLEARANCE,
+                            expected_centre_z=C.SURFACE_DZ + 0.5 * C.CUBE_EDGE,
+                            place_spread_dir=[0.0, 1.0, 0.0],
+                            place_yaw_deg=0.0,
+                            zone_center=list(C.DEFECT_ZONE_CENTERS[colour]),
+                            zone_size=list(C.DEFECT_ZONE_SIZE),
+                            zone_safe_inset=C.DEFECT_ZONE_SAFE_INSET,
+                        )
+                    )
+            validated_detection_ids = [p["detection_id"] for p in picks]
+        else:
+            for o in cubes:
+                o.update(eligible=False, disposition="rejected", skip_reason="incomplete_defect_inventory")
+                if o not in rejected:
+                    rejected.append(o)
         vials, caps = [], []
     elif len(cubes) == 2:
         cubes.sort(key=lambda o: o["xy"][1])
@@ -328,10 +440,27 @@ def build_plan(det, cam, img=None, task=None):
         "gripper_model": C.GRIPPER_MODEL,
         "task": task,
         "stack_ready": stack_ready,
+        "defect_sort_ready": defect_sort_ready,
+        "validation_errors": validation_errors,
+        "validated_cube_detection_ids": validated_detection_ids,
         "stack_colours_bottom_to_top": (
             list(C.CUBE_STACK_COLOURS) if task == "cube_stack" else None
         ),
         "open_gap_m": 2 * C.JAW_OPEN,
+        "distractor_safety": {
+            "categories": ["cap", "vial"],
+            "unintended_lift_forbidden": True,
+            "max_translation_m": C.DISTRACTOR_TRANSLATION_LIMIT,
+            "max_rotation_deg": C.DISTRACTOR_ROTATION_LIMIT_DEG,
+        },
+        "reporting_schema": {
+            "retry_fields": ["reason", "outcome"],
+            "recovery_fields": ["reason", "outcome"],
+            "retry_count_field": "retry_count",
+            "recovery_count_field": "recovery_count",
+            "timing_fields": ["motion_time_s", "wall_clock_time_s"],
+            "distractor_fields": ["distractor_grasps", "distractor_displacements"],
+        },
         "picks": picks,
         "observations": observations,
         "skipped": rejected,
@@ -342,7 +471,9 @@ def score_observations(plan, gt):
     """One-to-one matching for evaluation ONLY, after the plan is finalized."""
     matches, missed, unmatched = [], [], []
     categories = (
-        ("cube",) if plan.get("task") == "cube_stack" else ("cap", "cube", "vial")
+        ("cube",)
+        if plan.get("task") in ("cube_stack", "defect_sort")
+        else ("cap", "cube", "vial")
     )
     for category in categories:
         predicted = [
@@ -451,7 +582,9 @@ def score_observations(plan, gt):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--run", required=True)
-    ap.add_argument("--task", choices=["sort", "cube_stack"], default=C.SORT_TASK)
+    ap.add_argument(
+        "--task", choices=["sort", "cube_stack", "defect_sort"], default=C.SORT_TASK
+    )
     args = ap.parse_args()
     run = Path(args.run)
     cam = CameraModel(str(run / "camera.json"))

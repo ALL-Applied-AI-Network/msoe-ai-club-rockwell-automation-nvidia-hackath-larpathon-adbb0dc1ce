@@ -17,6 +17,11 @@ parser.add_argument(
     "--resolution",
     help="Capture resolution as WIDTHxHEIGHT; for example 640x360",
 )
+parser.add_argument(
+    "--validate-defect-zones",
+    action="store_true",
+    help="validate and annotate one static Dataset 3 table-camera scene",
+)
 args = parser.parse_args()
 # resolve before Isaac starts: Kit changes the working directory
 args.out = os.path.abspath(args.out)
@@ -55,12 +60,17 @@ _CAMS = {
 cam_path, cfg = _CAMS[args.camera]
 cfg = dict(cfg)
 
+if args.validate_defect_zones and args.camera != "table":
+    parser.error("--validate-defect-zones requires --camera table")
+
 if args.resolution:
     width, height = (int(value) for value in args.resolution.lower().split("x", 1))
     if width <= 0 or height <= 0:
         raise ValueError("--resolution dimensions must be positive")
     cfg["resolution"] = (width, height)
-elif args.camera == "table" and C.SORT_TASK == "cube_stack":
+elif args.validate_defect_zones:
+    cfg["resolution"] = (1920, 1080)
+elif args.camera == "table" and C.SORT_TASK in ("cube_stack", "defect_sort"):
     cfg["resolution"] = tuple(2 * v for v in cfg["resolution"])
 
 from isaacsim.sensors.camera import Camera
@@ -90,20 +100,24 @@ print(
     flush=True,
 )
 
-# park the arm out of the overhead camera's view before the snapshot
+# The ordinary capture parks the arm out of view.  Static defect-zone validation
+# must not command or reposition the robot at all.
 from isaacsim.core.prims import SingleArticulation
-from isaacsim.core.utils.types import ArticulationAction
 
 arm = SingleArticulation(prim_path=C.ROBOT_PRIM, name="er4ia")
 arm.initialize()
-names = list(arm.dof_names)
-q = arm.get_joint_positions()
-for j, deg in C.CAPTURE_POSE_DEG.items():
-    q[names.index(j)] = np.deg2rad(deg)
-for jn, v in cell.jaw_targets(C.JAW_OPEN).items():
-    q[names.index(jn)] = v
-arm.set_joint_positions(q)
-arm.apply_action(ArticulationAction(joint_positions=q))
+if not args.validate_defect_zones:
+    from isaacsim.core.utils.types import ArticulationAction
+
+    names = list(arm.dof_names)
+    q = arm.get_joint_positions()
+    for j, deg in C.CAPTURE_POSE_DEG.items():
+        q[names.index(j)] = np.deg2rad(deg)
+    for jn, value in cell.jaw_targets(C.JAW_OPEN).items():
+        q[names.index(jn)] = value
+    arm.set_joint_positions(q)
+    arm.apply_action(ArticulationAction(joint_positions=q))
+inspection_joints_before = arm.get_joint_positions().tolist()
 
 # MDL materials need frames to compile before synchronized capture.
 for _ in range(90):
@@ -141,6 +155,7 @@ if rgba is None:
         f"timeline_playing={timeline.is_playing()}, "
         f"resolution={cfg['resolution']}"
     )
+inspection_joints_after = arm.get_joint_positions().tolist()
 
 os.makedirs(args.out, exist_ok=True)
 rgb = rgba[:, :, :3].astype(np.uint8)
@@ -174,7 +189,20 @@ with open(os.path.join(args.out, "camera.json"), "w") as f:
 # ---- ground truth, for scoring the VLM later
 from isaacsim.core.prims import SingleXFormPrim
 
-gt = {"objects": [], "bins": {}}
+gt = {
+    "objects": [],
+    "bins": {},
+    "defect_zones": [
+        {
+            "colour": colour,
+            "defect_class": C.DEFECT_CLASS_BY_COLOUR[colour],
+            "center": list(center),
+            "size": list(C.DEFECT_ZONE_SIZE),
+            "target_slots": [list(slot) for slot in C.DEFECT_TARGET_SLOTS[colour]],
+        }
+        for colour, center in C.DEFECT_ZONE_CENTERS.items()
+    ],
+}
 scene_state = {"objects": {}}
 for prim in stage.Traverse():
     if prim.GetName().startswith(("SortCube", "SortVial", "SortCap")) and prim.HasAPI(
@@ -228,7 +256,31 @@ with open(os.path.join(args.out, "ground_truth.json"), "w") as f:
 with open(os.path.join(args.out, "scene_state.json"), "w") as f:
     json.dump(scene_state, f, indent=2)
 
-print(f"[capture] image      {img_path}  ({W}x{H})")
-print(f"[capture] camera     {args.out}/camera.json")
-print(f"[capture] gt objects {len(gt['objects'])}")
-sim_app.close()
+validation_report = None
+try:
+    if args.validate_defect_zones:
+        from defect_zone_validation import validate_scene_capture
+
+        validation_report = validate_scene_capture(
+            stage,
+            args.out,
+            gt,
+            scene_state,
+            inspection_joints_before,
+            inspection_joints_after,
+        )
+        print(
+            f"[capture] defect-zone validation {validation_report['status']} "
+            f"failures={validation_report['failures']}",
+            flush=True,
+        )
+
+    print(f"[capture] image      {img_path}  ({W}x{H})")
+    print(f"[capture] camera     {args.out}/camera.json")
+    print(f"[capture] gt objects {len(gt['objects'])}")
+    if validation_report is not None and validation_report["status"] != "PASS":
+        raise SystemExit(
+            "Defect-zone validation failed; inspect defect_zone_validation.json"
+        )
+finally:
+    sim_app.close()

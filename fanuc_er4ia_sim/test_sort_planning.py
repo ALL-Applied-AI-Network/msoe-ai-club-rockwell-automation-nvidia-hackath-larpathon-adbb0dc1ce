@@ -4,14 +4,31 @@ These use synthetic observations, not Cosmos inference or PhysX execution.
 """
 
 import copy
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 import numpy as np
 
 import scene_config as C
+from defect_zone_validation import (
+    configured_geometry_validation,
+    robot_inactivity_validation,
+    slot_records,
+    validate_scene_capture,
+    zone_marker_paths,
+)
 from test_support import camera_model as model
 from plan_sort import build_plan as task_plan, cap_silhouette, score_observations
-from sort_scene import validate_plan, verify_cube_stack
+from sort_scene import (
+    build_defect_report,
+    cube_footprint_within_defect_zone,
+    evaluate_defect_placement,
+    evaluate_distractor_safety,
+    validate_plan,
+    verify_cube_stack,
+)
 
 
 def build_plan(*args, **kwargs):
@@ -20,6 +37,171 @@ def build_plan(*args, **kwargs):
 
 
 class HardwareConfigurationTests(unittest.TestCase):
+    def test_audited_defect_sort_constants(self):
+        self.assertEqual(C.CUBE_EDGE, 0.010)
+        self.assertEqual(
+            C.DEFECT_CLASS_BY_COLOUR,
+            {
+                "red": "Defect Class A",
+                "blue": "Defect Class B",
+                "yellow": "Defect Class C",
+            },
+        )
+        self.assertEqual(C.DEFECT_ZONE_SIZE, (0.080, 0.060))
+        self.assertEqual(C.DEFECT_ZONE_SAFE_INSET, 0.010)
+        self.assertEqual(
+            C.DEFECT_ZONE_CENTERS,
+            {"red": (0.200, 0.320), "blue": (0.300, 0.320), "yellow": (0.400, 0.320)},
+        )
+        self.assertEqual(
+            C.DEFECT_TARGET_SLOTS,
+            {
+                "red": [(0.185, 0.320), (0.215, 0.320)],
+                "blue": [(0.285, 0.320), (0.315, 0.320)],
+                "yellow": [(0.385, 0.320), (0.415, 0.320)],
+            },
+        )
+        self.assertEqual(len(slot_records()), 6)
+        self.assertEqual(len({tuple(row["xy"]) for row in slot_records()}), 6)
+        self.assertEqual(len(zone_marker_paths()), 9)
+        geometry = configured_geometry_validation()
+        self.assertTrue(all(geometry["checks"].values()))
+        self.assertEqual(len(geometry["ik_checks"]), 6)
+        self.assertTrue(all(row["reachable"] for row in geometry["ik_checks"]))
+        self.assertEqual(C.PASSIVE_JOINT_DRIFT_TOLERANCE_RAD, 1e-3)
+
+        measured_yaad_drift_rad = 0.00010245561134070158
+        validation_cases = (
+            ("zero commands below tolerance", 0.0009, {}, True, True, True),
+            ("zero commands above tolerance", 0.0011, {}, True, False, False),
+            (
+                "command fails regardless of drift",
+                0.0,
+                {"articulation_action_commands": 1},
+                False,
+                True,
+                False,
+            ),
+            (
+                "YAAD 3e370799 measured drift",
+                measured_yaad_drift_rad,
+                {},
+                True,
+                True,
+                True,
+            ),
+        )
+        for (
+            name,
+            drift,
+            commands,
+            no_commands,
+            passive_drift_passed,
+            validation_passed,
+        ) in validation_cases:
+            with self.subTest(name):
+                result = robot_inactivity_validation([0.0], [drift], commands)
+                self.assertEqual(result["no_robot_commands_issued"], no_commands)
+                self.assertEqual(
+                    result["passive_joint_drift_within_tolerance"],
+                    passive_drift_passed,
+                )
+                self.assertEqual(result["robot_commands_issued"], not no_commands)
+                self.assertAlmostEqual(result["maximum_passive_joint_drift_rad"], drift)
+                self.assertAlmostEqual(
+                    result["maximum_passive_joint_drift_degrees"], np.rad2deg(drift)
+                )
+                self.assertEqual(
+                    result["passive_joint_drift_tolerance_rad"],
+                    C.PASSIVE_JOINT_DRIFT_TOLERANCE_RAD,
+                )
+                self.assertEqual(
+                    result["no_robot_commands_issued"]
+                    and result["passive_joint_drift_within_tolerance"],
+                    validation_passed,
+                )
+
+        # Structural guard only: the host environment has no pxr runtime, so the
+        # Isaac/USD run remains the authority for actual customData type acceptance.
+        cell_source = (Path(__file__).parent / "cell.py").read_text(encoding="utf-8")
+        marker_source = cell_source.split("def add_defect_zone_markers", 1)[1].split(
+            "def add_bin", 1
+        )[0]
+        for typed_write in (
+            'SetCustomDataByKey("colour", str(colour))',
+            '"defectClass", str(C.DEFECT_CLASS_BY_COLOUR[colour])',
+            'SetCustomDataByKey("centerXY", Gf.Vec2d(x, y))',
+            'SetCustomDataByKey("sizeXY", Gf.Vec2d(*C.DEFECT_ZONE_SIZE))',
+            'SetCustomDataByKey("slotXY", Gf.Vec2d(slot_x, slot_y))',
+        ):
+            self.assertIn(typed_write, marker_source)
+        self.assertNotIn('SetCustomDataByKey("centerXY", list(', marker_source)
+        self.assertNotIn('SetCustomDataByKey("sizeXY", list(', marker_source)
+        self.assertNotIn('SetCustomDataByKey("slotXY", [', marker_source)
+
+        validator_source = (
+            Path(__file__).parent / "defect_zone_validation.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("GetDescendants", validator_source)
+        self.assertIn("Usd.PrimRange(root)", validator_source)
+        self.assertIn('"all_marker_metadata_matches"', validator_source)
+
+        # Failure-safety is host-testable without pretending to execute USD.  A
+        # mocked stage check raises exactly like the failed YAAD run; the real
+        # validator must still annotate, serialize drift, and write a FAIL report.
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out = Path(temp_dir)
+            (out / "world_camera.png").write_bytes(b"captured")
+            (out / "camera.json").write_text(
+                json.dumps({"camera": "table", "resolution": [1920, 1080]}),
+                encoding="utf-8",
+            )
+
+            def fake_annotate(_image, _camera, output):
+                Path(output).write_bytes(b"annotated")
+
+            visibility = {
+                "all_cubes_inside_frame": True,
+                "all_zones_inside_frame": True,
+                "all_target_slots_inside_frame": True,
+            }
+            with (
+                patch(
+                    "defect_zone_validation.stage_marker_validation",
+                    side_effect=AttributeError("synthetic USD traversal failure"),
+                ),
+                patch(
+                    "defect_zone_validation.annotate_capture",
+                    side_effect=fake_annotate,
+                ),
+                patch(
+                    "defect_zone_validation.camera_visibility",
+                    return_value=visibility,
+                ),
+                patch(
+                    "defect_zone_validation.cv2.imread",
+                    return_value=np.zeros((1080, 1920, 3), dtype=np.uint8),
+                ),
+            ):
+                report = validate_scene_capture(
+                    object(), out, {"objects": []}, {"objects": {}}, [0, 0], [0, 0]
+                )
+            persisted = json.loads(
+                (out / "defect_zone_validation.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(report["status"], "FAIL")
+            self.assertEqual(persisted["status"], "FAIL")
+            self.assertEqual(persisted["exceptions"][0]["phase"], "stage_markers")
+            self.assertIn("traceback", persisted["exceptions"][0])
+            self.assertEqual(
+                persisted["actions"]["maximum_passive_joint_drift_rad"], 0
+            )
+            self.assertTrue(persisted["checks"]["no_robot_commands_issued"])
+            self.assertTrue(
+                persisted["checks"]["passive_joint_drift_within_tolerance"]
+            )
+            self.assertTrue(persisted["checks"]["annotated_capture_written"])
+
     def test_smc_travel_and_demo_clearance(self):
         self.assertEqual(C.GRIPPER_MODEL, "SMC MHZL2-16D2")
         self.assertAlmostEqual(C.JAW_STROKE, 0.006)
@@ -101,8 +283,25 @@ class SortPlanningTests(unittest.TestCase):
                     for dx in (-C.CUBE_EDGE / 2, C.CUBE_EDGE / 2)
                 ],
                 pose_confidence=0.95,
+                classification_confidence=0.95,
+                pose_fit_iou=0.95,
             )
         return obj
+
+    def defect_inventory(self):
+        return [
+            self.detection("cube", xy, colour=colour, object_id=f"cube-{i}")
+            for i, (xy, colour) in enumerate(
+                [
+                    ((0.45, 0.15), "red"),
+                    ((0.25, 0.15), "blue"),
+                    ((0.35, -0.15), "yellow"),
+                    ((0.45, -0.15), "blue"),
+                    ((0.35, 0.15), "red"),
+                    ((0.25, -0.15), "yellow"),
+                ]
+            )
+        ]
 
     def test_only_confident_narrow_caps_are_selected(self):
         objects = [
@@ -321,6 +520,268 @@ class SortPlanningTests(unittest.TestCase):
         # Both within the site tolerance, but without adequate mutual overlap.
         self.assertFalse(verify_cube_stack(poses([-0.002, 0.002]), entries))
         self.assertFalse(verify_cube_stack(poses([0.001, 0.005]), entries))
+
+    def test_defect_sort_valid_two_two_two_inventory_and_distractors(self):
+        objects = self.defect_inventory() + [
+            self.detection("cap", (0.40, 0.0)),
+            self.detection("cap", (0.42, 0.0)),
+            self.detection("vial", (0.40, -0.1)),
+            self.detection("vial", (0.42, -0.1)),
+        ]
+        plan = task_plan({"objects": objects}, self.cam, task="defect_sort")
+        validate_plan(plan)
+        self.assertTrue(plan["defect_sort_ready"])
+        self.assertEqual(len(plan["picks"]), 6)
+        self.assertEqual(len(set(plan["validated_cube_detection_ids"])), 6)
+        self.assertEqual(len({p["object_id"] for p in plan["picks"]}), 6)
+        self.assertEqual(
+            [o["disposition"] for o in plan["observations"][6:]],
+            ["ignored_distractor"] * 4,
+        )
+        self.assertTrue(all(p["category"] == "cube" for p in plan["picks"]))
+        self.assertEqual(
+            {p["defect_class"] for p in plan["picks"]},
+            set(C.DEFECT_CLASS_BY_COLOUR.values()),
+        )
+
+    def test_defect_sort_generates_unique_internal_object_ids_when_absent(self):
+        objects = self.defect_inventory()
+        for obj in objects:
+            obj.pop("object_id")
+        plan = task_plan({"objects": objects}, self.cam, task="defect_sort")
+        validate_plan(plan)
+        self.assertEqual(len({p["object_id"] for p in plan["picks"]}), 6)
+
+    def test_defect_sort_rejects_missing_extra_and_wrong_colour_count(self):
+        inventory = self.defect_inventory()
+        cases = [
+            inventory[:-1],
+            inventory
+            + [self.detection("cube", (0.29, -0.23), colour="red")],
+            [dict(o, colour="red") if i == 1 else o for i, o in enumerate(inventory)],
+        ]
+        for objects in cases:
+            with self.subTest(count=len(objects)):
+                plan = task_plan({"objects": objects}, self.cam, task="defect_sort")
+                self.assertFalse(plan["defect_sort_ready"])
+                self.assertEqual(plan["picks"], [])
+                with self.assertRaises(ValueError):
+                    validate_plan(plan)
+
+    def test_defect_sort_rejects_duplicate_cube_id_or_detection(self):
+        inventory = self.defect_inventory()
+        duplicate_id = copy.deepcopy(inventory)
+        duplicate_id[1]["detection_id"] = 7
+        duplicate_id[2]["detection_id"] = 7
+        spatial_duplicate = inventory + [dict(inventory[0], object_id="cube-extra")]
+        for objects in (duplicate_id, spatial_duplicate):
+            plan = task_plan({"objects": objects}, self.cam, task="defect_sort")
+            self.assertFalse(plan["defect_sort_ready"])
+            self.assertEqual(plan["picks"], [])
+
+    def test_defect_sort_rejects_ambiguous_or_low_confidence_cube(self):
+        for changes in (
+            {"colour": "unknown"},
+            {"classification_confidence": 0.79},
+            {"pose_confidence": 0.79},
+            {"pose_fit_iou": 0.74},
+        ):
+            objects = self.defect_inventory()
+            objects[0].update(changes)
+            plan = task_plan({"objects": objects}, self.cam, task="defect_sort")
+            self.assertFalse(plan["defect_sort_ready"])
+            self.assertEqual(plan["picks"], [])
+
+    def test_executor_rejects_distractor_wrong_zone_and_pick_count_tampering(self):
+        plan = task_plan(
+            {"objects": self.defect_inventory()}, self.cam, task="defect_sort"
+        )
+        bad_distractor = copy.deepcopy(plan)
+        bad_distractor["picks"][0]["category"] = "cap"
+        wrong_zone = copy.deepcopy(plan)
+        wrong_zone["picks"][0]["assigned_slot"] = list(
+            C.DEFECT_TARGET_SLOTS["blue"][0]
+        )
+        wrong_zone["picks"][0]["place_xy"] = list(C.DEFECT_TARGET_SLOTS["blue"][0])
+        short = copy.deepcopy(plan)
+        short["picks"].pop()
+        for bad in (bad_distractor, wrong_zone, short):
+            with self.assertRaises(ValueError):
+                validate_plan(bad)
+
+    def test_executor_rejects_duplicate_target_slot(self):
+        plan = task_plan(
+            {"objects": self.defect_inventory()}, self.cam, task="defect_sort"
+        )
+        plan["picks"][1]["assigned_slot"] = list(plan["picks"][0]["assigned_slot"])
+        plan["picks"][1]["place_xy"] = list(plan["picks"][0]["assigned_slot"])
+        with self.assertRaises(ValueError):
+            validate_plan(plan)
+
+    def test_zone_containment_and_five_mm_slot_tolerance(self):
+        plan = task_plan(
+            {"objects": self.defect_inventory()}, self.cam, task="defect_sort"
+        )
+        pick = next(p for p in plan["picks"] if p["colour"] == "red")
+        slot = np.array(pick["assigned_slot"])
+        self.assertTrue(
+            evaluate_defect_placement(pick, slot + [0.005, 0])[
+                "correct_zone_placement"
+            ]
+        )
+        self.assertFalse(
+            evaluate_defect_placement(pick, slot + [0.00501, 0])[
+                "correct_zone_placement"
+            ]
+        )
+        self.assertTrue(cube_footprint_within_defect_zone((0.225, 0.320), "red"))
+        self.assertFalse(cube_footprint_within_defect_zone((0.2251, 0.320), "red"))
+        self.assertFalse(cube_footprint_within_defect_zone((0.2, 0.32), "unknown"))
+
+    def test_flat_cube_height_is_half_edge_and_stack_height_is_separate(self):
+        flat = task_plan(
+            {"objects": self.defect_inventory()}, self.cam, task="defect_sort"
+        )
+        self.assertTrue(
+            all(
+                np.isclose(
+                    p["expected_centre_z"], C.SURFACE_DZ + 0.5 * C.CUBE_EDGE
+                )
+                for p in flat["picks"]
+            )
+        )
+        stack = task_plan(
+            {"objects": self.defect_inventory()}, self.cam, task="cube_stack"
+        )
+        self.assertAlmostEqual(
+            stack["picks"][1]["expected_centre_z"],
+            C.SURFACE_DZ + 1.5 * C.CUBE_EDGE,
+        )
+
+    def test_distractor_displacement_and_lift_thresholds(self):
+        before = {
+            "cap": {"centre": [0, 0, 0], "yaw_deg": 0},
+            "vial": {"centre": [0, 0, 0], "yaw_deg": 0},
+        }
+        at_limit = {
+            "cap": {"centre": [0.002, 0, 0], "yaw_deg": 5},
+            "vial": {"centre": [0, 0, 0], "yaw_deg": 0},
+        }
+        safe = evaluate_distractor_safety(before, at_limit, [], {"cap", "vial"})
+        self.assertTrue(safe["distractor_safety_passed"])
+        over = copy.deepcopy(at_limit)
+        over["cap"]["centre"][0] = 0.00201
+        over["vial"]["yaw_deg"] = 5.01
+        unsafe = evaluate_distractor_safety(
+            before, over, [{"distractor_lifts": ["cap"]}], {"cap", "vial"}
+        )
+        self.assertFalse(unsafe["distractor_safety_passed"])
+        self.assertEqual(unsafe["distractor_grasps"], ["cap"])
+        self.assertTrue(
+            any(
+                row["translation_exceeded"] or row["rotation_exceeded"]
+                for row in unsafe["distractor_displacements"]
+            )
+        )
+
+        half_angle = np.deg2rad(6 / 2)
+        rotated = copy.deepcopy(before)
+        before["cap"]["orientation"] = [1, 0, 0, 0]
+        rotated["cap"]["orientation"] = [np.cos(half_angle), np.sin(half_angle), 0, 0]
+        rotated["vial"]["orientation"] = [1, 0, 0, 0]
+        before["vial"]["orientation"] = [1, 0, 0, 0]
+        quaternion_unsafe = evaluate_distractor_safety(
+            before, rotated, [], {"cap", "vial"}
+        )
+        self.assertFalse(quaternion_unsafe["distractor_safety_passed"])
+
+    def test_defect_report_schema_includes_metrics_retries_and_recoveries(self):
+        plan = task_plan(
+            {"objects": self.defect_inventory()}, self.cam, task="defect_sort"
+        )
+        event = {
+            "pickup_verified": True,
+            "placement_verified": True,
+            "correct_zone_placement": True,
+            "predicted_colour": "red",
+            "expected_colour": "red",
+            "predicted_defect_class": "Defect Class A",
+            "expected_defect_class": "Defect Class A",
+            "classification_correct": True,
+            "position_error_mm": 0.2,
+            "yaw_error_deg_mod90": 1.0,
+            "placement_position_error_mm": 0.3,
+            "assigned_slot_error_mm": 0.3,
+            "correct_zone_containment": True,
+            "retries": [{"reason": "ik", "outcome": "recovered"}],
+            "recoveries": [{"reason": "settle", "outcome": "recovered"}],
+        }
+        report = build_defect_report(
+            plan,
+            [event],
+            1.25,
+            2.5,
+            {
+                "distractor_grasps": [],
+                "distractor_displacements": [],
+                "distractor_safety_passed": True,
+            },
+        )
+        for field in (
+            "defect_parts_detected",
+            "successful_pickups",
+            "correct_zone_placements",
+            "distractor_grasps",
+            "distractor_displacements",
+            "classification_accuracy",
+            "motion_time_s",
+            "wall_clock_time_s",
+            "retry_count",
+            "recovery_count",
+        ):
+            self.assertIn(field, report)
+        for field in (
+            "predicted_colour",
+            "expected_colour",
+            "predicted_defect_class",
+            "expected_defect_class",
+            "position_error_mm",
+            "yaw_error_deg_mod90",
+            "placement_position_error_mm",
+            "assigned_slot_error_mm",
+            "correct_zone_containment",
+        ):
+            self.assertIn(field, event)
+
+        failed_event = dict(
+            event,
+            pickup_verified=False,
+            placement_verified=False,
+            correct_zone_placement=False,
+            classification_correct=False,
+            retries=[],
+            recoveries=[],
+        )
+        failed_report = build_defect_report(
+            plan,
+            [failed_event],
+            0,
+            0,
+            {
+                "distractor_grasps": ["cap"],
+                "distractor_displacements": [{"name": "cap"}],
+                "distractor_safety_passed": False,
+            },
+        )
+        self.assertEqual(failed_report["successful_pickups"], 0)
+        self.assertEqual(failed_report["correct_zone_placements"], 0)
+        self.assertEqual(failed_report["classification_accuracy"], 0)
+        self.assertFalse(failed_report["distractor_safety_passed"])
+
+    def test_pipeline_routes_explicit_defect_sort_mode(self):
+        script = (Path(__file__).parent / "run_sort_pipeline.sh").read_text()
+        self.assertIn("perceive.py\" --run \"$RUN\" --defect-sort", script)
+        self.assertIn("plan_sort.py\" --run \"$RUN\" --task defect_sort", script)
 
 
 if __name__ == "__main__":

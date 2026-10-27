@@ -27,6 +27,14 @@ class CubePerceptionTests(unittest.TestCase):
                     ("red", 700),
                 ]
             ]
+            + [
+                dict(
+                    category="cap",
+                    colour="yellow",
+                    center=[900, 600],
+                    bbox=[880, 580, 920, 620],
+                )
+            ]
         }
         reply = {
             "objects": [
@@ -46,7 +54,10 @@ class CubePerceptionTests(unittest.TestCase):
             with patch("perceive.ask", return_value=json.dumps(reply)) as ask:
                 result = audit_stack_colours(None, None, img, parsed, root)
             self.assertEqual(ask.call_count, 1)
-        self.assertEqual(len(result["objects"]), 6)
+        self.assertEqual(len(result["objects"]), 7)
+        self.assertEqual(
+            sum(o.get("category") == "cap" for o in result["objects"]), 1
+        )
         self.assertEqual(result["coordinate_convention"], "unit")
         self.assertAlmostEqual(result["objects"][0]["center"][0], 0.3)
         self.assertAlmostEqual(result["objects"][-1]["center"][0], 0.5)

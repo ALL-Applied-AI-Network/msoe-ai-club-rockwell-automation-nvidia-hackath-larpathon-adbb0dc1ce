@@ -13,6 +13,7 @@ CODE = (
     "capture_scene.py",
     "cell.py",
     "cube_pose.py",
+    "defect_zone_validation.py",
     "encode_video.py",
     "fk.py",
     "gripper_geometry.py",
