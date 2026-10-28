@@ -21,6 +21,12 @@ from deterministic_cv import (
     suppress_duplicates,
 )
 from deterministic_cv_evaluate import evaluate_predictions
+from perception_geometry import (
+    CUBE_BOUNDING_RADIUS_M,
+    simulation_source_workspace,
+    source_workspace_containment,
+    workspace_configuration_sha256,
+)
 from test_support import camera_model
 
 
@@ -31,6 +37,7 @@ class DeterministicCVTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.cam = camera_model(C.TABLE_CAM)
+        cls.workspace = simulation_source_workspace(cls.cam.j)
 
     def blank(self):
         return np.full((self.cam.H, self.cam.W, 3), 240, np.uint8)
@@ -60,7 +67,7 @@ class DeterministicCVTests(unittest.TestCase):
                 self.assertEqual(np.count_nonzero(_colour_mask(hsv, other)), 0)
             scene = self.blank()
             self.paint_cube(scene, (0.36, 0.07), 18, colour)
-            result = detect_image(scene, self.cam)
+            result = detect_image(scene, self.cam, self.workspace)
             self.assertEqual([d["color"] for d in result["accepted_detections"]], [colour])
 
     def test_red_hue_wraparound(self):
@@ -74,7 +81,7 @@ class DeterministicCVTests(unittest.TestCase):
         self.paint_cube(image, (0.36, 0.07), 18, "yellow")
         cap_uv = self.cam.project([0.46, -0.10, self.cam.table_z + C.CUBE_EDGE / 2])
         cv2.circle(image, tuple(np.rint(cap_uv).astype(int)), 18, BGR["yellow"], -1)
-        result = detect_image(image, self.cam)
+        result = detect_image(image, self.cam, self.workspace)
         self.assertEqual(len(result["accepted_detections"]), 1)
         self.assertEqual(result["accepted_detections"][0]["color"], "yellow")
         cap_rejections = [
@@ -88,14 +95,14 @@ class DeterministicCVTests(unittest.TestCase):
     def test_clear_vial_is_not_a_colour_candidate(self):
         image = self.blank()
         cv2.rectangle(image, (600, 500), (900, 525), (210, 215, 215), -1)
-        result = detect_image(image, self.cam)
+        result = detect_image(image, self.cam, self.workspace)
         self.assertEqual(result["candidate_count"], 0)
         self.assertEqual(result["accepted_cube_count"], 0)
 
     def test_expected_size_rejection(self):
         image = self.blank()
         cv2.rectangle(image, (700, 500), (780, 580), BGR["blue"], -1)
-        result = detect_image(image, self.cam)
+        result = detect_image(image, self.cam, self.workspace)
         self.assertEqual(result["accepted_cube_count"], 0)
         self.assertTrue(any(
             "projected_size_inconsistent_with_10_mm_cube" in c["rejection_reasons"]
@@ -117,7 +124,7 @@ class DeterministicCVTests(unittest.TestCase):
         muted_hsv[:] = (8, 50, 45)
         muted_bgr = cv2.cvtColor(muted_hsv, cv2.COLOR_HSV2BGR)
         image[mask] = muted_bgr[mask]
-        result = detect_image(image, self.cam)
+        result = detect_image(image, self.cam, self.workspace)
         self.assertEqual(result["accepted_cube_count"], 0)
         self.assertTrue(any(
             "colour_confidence_too_low" in c["rejection_reasons"]
@@ -165,21 +172,111 @@ class DeterministicCVTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             image_path, camera_path = root / "image.png", root / "camera.json"
+            workspace_path = root / "workspace.json"
             cv2.imwrite(str(image_path), self.blank())
             camera_path.write_text(json.dumps(self.cam.j))
+            workspace_path.write_text(json.dumps(self.workspace))
             (root / "ground_truth.json").write_text("forbidden")
             (root / "scene_state.json").write_text("forbidden")
             original_open = builtins.open
 
             def guarded_open(file, *args, **kwargs):
-                if Path(file).name in {"ground_truth.json", "scene_state.json", "settled_execution_start_state.json"}:
+                if Path(file).name in {
+                    "ground_truth.json", "scene_state.json", "settled_execution_start_state.json",
+                    "oracle_plan.json", "object_names.json",
+                }:
                     raise AssertionError("detector attempted evaluator-only input")
                 return original_open(file, *args, **kwargs)
 
             with patch("builtins.open", guarded_open):
-                result = run_detector(image_path, camera_path, root / "detections.json")
+                result = run_detector(
+                    image_path, camera_path, workspace_path, root / "detections.json"
+                )
             self.assertFalse(result["ground_truth_used"])
             self.assertFalse(result["simulator_state_used"])
+
+    def test_workspace_containment_models(self):
+        inside = source_workspace_containment((0.30, 0.0), self.workspace)
+        self.assertTrue(inside["passed"])
+        self.assertEqual(inside["footprint_model"], "conservative_bounding_circle")
+        crossing = source_workspace_containment((0.250, 0.0), self.workspace)
+        self.assertFalse(crossing["passed"])
+        self.assertAlmostEqual(
+            crossing["signed_containment_margin_m"], 0.005 - CUBE_BOUNDING_RADIUS_M
+        )
+        exact = source_workspace_containment(
+            (0.251, 0.0), self.workspace, yaw_deg=0.0, exact_oriented_footprint=True
+        )
+        self.assertTrue(exact["passed"])
+        self.assertEqual(exact["footprint_model"], "exact_oriented_square")
+
+    def test_workspace_configuration_fails_closed(self):
+        with self.assertRaisesRegex(ValueError, "workspace configuration is required"):
+            detect_image(self.blank(), self.cam, None)
+        invalid = json.loads(json.dumps(self.workspace))
+        invalid["polygon_vertices_xy_m"] = [[0, 0], [1, 0], [0.5, 0]]
+        invalid["configuration_sha256"] = workspace_configuration_sha256(invalid)
+        with self.assertRaisesRegex(ValueError, "polygon"):
+            detect_image(self.blank(), self.cam, invalid)
+        mismatch = json.loads(json.dumps(self.workspace))
+        mismatch["coordinate_frame"] = "wrong_frame"
+        mismatch["configuration_sha256"] = workspace_configuration_sha256(mismatch)
+        with self.assertRaisesRegex(ValueError, "coordinate frame mismatch"):
+            detect_image(self.blank(), self.cam, mismatch)
+        incompatible = json.loads(json.dumps(self.workspace))
+        incompatible["calibration_compatibility_id"] = "wrong_calibration"
+        incompatible["configuration_sha256"] = workspace_configuration_sha256(incompatible)
+        with self.assertRaisesRegex(ValueError, "compatibility identifier"):
+            detect_image(self.blank(), self.cam, incompatible)
+        wrong_version = json.loads(json.dumps(self.workspace))
+        wrong_version["compatible_calibration_version"] = "obsolete"
+        wrong_version["configuration_sha256"] = workspace_configuration_sha256(wrong_version)
+        with self.assertRaisesRegex(ValueError, "calibration version mismatch"):
+            detect_image(self.blank(), self.cam, wrong_version)
+        wrong_hash = json.loads(json.dumps(self.workspace))
+        wrong_hash["compatible_calibration_sha256"] = "0" * 64
+        wrong_hash["configuration_sha256"] = workspace_configuration_sha256(wrong_hash)
+        with self.assertRaisesRegex(ValueError, "not bound to this camera"):
+            detect_image(self.blank(), self.cam, wrong_hash)
+
+    def test_outside_cube_like_component_is_rejected_before_inventory(self):
+        image = self.blank()
+        self.paint_cube(image, (-0.1145, 0.115), 0, "red")
+        result = detect_image(image, self.cam, self.workspace)
+        rejected = [
+            row for row in result["rejected_candidates"]
+            if "outside_calibrated_source_workspace" in row["rejection_reasons"]
+        ]
+        self.assertTrue(rejected)
+        self.assertEqual(result["accepted_cube_count"], 0)
+        self.assertFalse(result["inventory_valid"])
+
+    def test_recorded_smoke_workspace_fixtures(self):
+        sensor_noses = [(-0.114624, 0.115232), (-0.114489, 0.114831)]
+        for xy in sensor_noses:
+            result = source_workspace_containment(xy, self.workspace)
+            self.assertFalse(result["passed"])
+            self.assertLess(result["signed_containment_margin_mm"], -366.0)
+        recorded_cubes = [
+            (0.40465955934468, -0.11196094561010553),
+            (0.4838618905792007, 0.024281248911994138),
+            (0.46494427421562673, -0.04325978304723675),
+            (0.4475224989550889, 0.11874195702474293),
+            (0.3954852482241444, -0.030185824394508266),
+            (0.3055990628417508, 0.1106656893270844),
+            (0.435981150341357, 0.1355211146527465),
+            (0.4275047696935954, 0.19700861926145058),
+            (0.32231284022861983, -0.2069329660772227),
+            (0.43587272870557914, 0.09163902520701124),
+            (0.3316582245035335, -0.08663295005308247),
+            (0.32550107278579243, 0.04127984367001428),
+        ]
+        margins = [
+            source_workspace_containment(xy, self.workspace)["signed_containment_margin_mm"]
+            for xy in recorded_cubes
+        ]
+        self.assertTrue(all(margin >= 0 for margin in margins))
+        self.assertAlmostEqual(min(margins), 14.067041608933826, places=6)
 
 
 if __name__ == "__main__":

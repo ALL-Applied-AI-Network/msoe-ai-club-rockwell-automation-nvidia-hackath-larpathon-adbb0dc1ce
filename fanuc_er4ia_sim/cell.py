@@ -994,12 +994,16 @@ def add_sort_objects(stage):
         make_dynamic(g.GetPrim(), C.VIAL_MASS, collide_self=False)
 
     # ---- caps: lying flat (Z-up disc), origin = bottom face ----
-    for i, (x, y) in enumerate(C.SORT_CAPS):
+    for i, entry in enumerate(C.SORT_CAPS):
+        x, y = entry[:2]
+        yaw_deg = entry[2] if len(entry) > 2 else 0.0
         g = UsdGeom.Xform.Define(stage, f"/World/SortCap{i}")
         xf = UsdGeom.Xformable(g.GetPrim())
         narrow_up = C.CAP_ORIENTATIONS[i] == "narrow_end_up"
         # Orient only the visual; root and compound collider remain Z-up.
         xf.AddTranslateOp().Set(Gf.Vec3d(x, y, Z))
+        if yaw_deg != 0.0:
+            xf.AddRotateZOp().Set(yaw_deg)
 
         vis_path = f"/World/SortCap{i}/Visual"
         add_reference_to_stage(

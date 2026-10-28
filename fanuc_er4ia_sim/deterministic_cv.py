@@ -17,7 +17,12 @@ import numpy as np
 
 from backproject import CameraModel
 from cube_pose import refine_pose, silhouette, square_yaw
-from perception_geometry import CUBE_EDGE_M
+from perception_geometry import (
+    CUBE_BOUNDING_RADIUS_M,
+    CUBE_EDGE_M,
+    source_workspace_containment,
+    validate_workspace_compatibility,
+)
 
 
 INFERENCE_SOURCE = "deterministic_cv"
@@ -138,6 +143,7 @@ def _candidate_record(
     label: int,
     stats: np.ndarray,
     centroid: np.ndarray,
+    workspace: dict,
 ) -> dict:
     component = (label_image == label).astype(np.uint8)
     contour = _component_contour(component)
@@ -205,6 +211,22 @@ def _candidate_record(
         yaw_best_iou, yaw_margin = _yaw_evidence(component, cam, fitted_xy, yaw)
     yaw_valid = bool(pose_iou >= 0.76 and yaw_best_iou >= 0.70 and yaw_margin >= 0.015)
 
+    if fitted_xy is None:
+        workspace_containment = {
+            "footprint_model": "conservative_bounding_circle",
+            "conservative_radius_m": CUBE_BOUNDING_RADIUS_M,
+            "oriented_footprint_xy_m": None,
+            "signed_containment_margin_m": None,
+            "signed_containment_margin_mm": None,
+            "passed": False,
+        }
+    else:
+        # Always use the yaw-independent bounding circle.  This is deliberately
+        # at least as conservative as an oriented square near any boundary.
+        workspace_containment = source_workspace_containment(fitted_xy, workspace)
+        if not workspace_containment["passed"]:
+            reasons.append("outside_calibrated_source_workspace")
+
     polygon = contour.reshape(-1, 2).tolist() if len(contour) else []
     diagnostic_label = "rejected_colour_component"
     if (
@@ -232,6 +254,10 @@ def _candidate_record(
         "yaw_valid": yaw_valid,
         "yaw_evidence_iou": yaw_best_iou,
         "yaw_evidence_margin": yaw_margin,
+        "workspace_configuration_version": workspace["configuration_version"],
+        "workspace_configuration_sha256": workspace["configuration_sha256"],
+        "workspace_coordinate_frame": workspace["coordinate_frame"],
+        "workspace_containment": workspace_containment,
         "color_confidence": color_confidence,
         "classification_confidence": classification_confidence,
         "pose_confidence": pose_confidence,
@@ -247,6 +273,7 @@ def _candidate_record(
             "projected_10_mm_size_passed",
             "square_footprint_passed",
             "calibrated_pose_fit_passed",
+            "calibrated_source_workspace_passed",
         ] if not reasons else [],
         "rejection_reasons": reasons,
         "diagnostic_label": "accepted_cube" if not reasons else diagnostic_label,
@@ -278,7 +305,7 @@ def suppress_duplicates(candidates: list[dict]) -> tuple[list[dict], list[dict]]
     return kept, rejected
 
 
-def finalize_inventory(candidates: list[dict]) -> dict:
+def finalize_inventory(candidates: list[dict], workspace: dict | None = None) -> dict:
     """Apply de-duplication and the non-negotiable six/2-2-2 inventory gate."""
     accepted, duplicate_rejections = suppress_duplicates(candidates)
     rejected = [c for c in candidates if not c["accepted"]]
@@ -300,11 +327,17 @@ def finalize_inventory(candidates: list[dict]) -> dict:
     return {
         "schema_version": 1,
         "inference_source": INFERENCE_SOURCE,
-        "inputs_allowed": ["rgb_image", "camera_calibration"],
+        "inputs_allowed": [
+            "rgb_image", "camera_calibration", "public_workspace_configuration"
+        ],
         "ground_truth_used": False,
         "simulator_state_used": False,
         "oracle_plan_used": False,
         "object_names_used": False,
+        "public_workspace_configuration_used": workspace is not None,
+        "workspace_configuration_version": None if workspace is None else workspace["configuration_version"],
+        "workspace_configuration_sha256": None if workspace is None else workspace["configuration_sha256"],
+        "workspace_coordinate_frame": None if workspace is None else workspace["coordinate_frame"],
         "cube_edge_m": CUBE_EDGE_M,
         "inventory_valid": valid,
         "inventory_failure_reasons": inventory_reasons,
@@ -331,11 +364,12 @@ def finalize_inventory(candidates: list[dict]) -> dict:
     }
 
 
-def detect_image(image: np.ndarray, cam: CameraModel) -> dict:
+def detect_image(image: np.ndarray, cam: CameraModel, workspace: dict | None = None) -> dict:
     if image is None or image.ndim != 3 or image.shape[2] != 3:
         raise ValueError("detector requires a BGR RGB-image array")
     if (image.shape[1], image.shape[0]) != (cam.W, cam.H):
         raise ValueError("image resolution does not match camera calibration")
+    validate_workspace_compatibility(workspace, cam.j)
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
     candidates = []
     for colour in COLOURS:
@@ -343,9 +377,11 @@ def detect_image(image: np.ndarray, cam: CameraModel) -> dict:
         count, labels, stats, centroids = cv2.connectedComponentsWithStats(mask, 8)
         for label in range(1, count):
             candidates.append(
-                _candidate_record(image, hsv, cam, colour, labels, label, stats, centroids)
+                _candidate_record(
+                    image, hsv, cam, colour, labels, label, stats, centroids, workspace
+                )
             )
-    return finalize_inventory(candidates)
+    return finalize_inventory(candidates, workspace)
 
 
 def _draw_candidate(image: np.ndarray, candidate: dict, accepted: bool) -> None:
@@ -362,6 +398,7 @@ def _draw_candidate(image: np.ndarray, candidate: dict, accepted: bool) -> None:
         "colour_confidence_too_low": "colour-conf",
         "classification_confidence_too_low": "class-conf",
         "pose_confidence_too_low": "pose-conf",
+        "outside_calibrated_source_workspace": "outside-workspace",
     }
     reason = "PASS" if accepted else short_reasons.get(
         candidate["rejection_reasons"][0], candidate["rejection_reasons"][0]
@@ -370,9 +407,34 @@ def _draw_candidate(image: np.ndarray, candidate: dict, accepted: bool) -> None:
                 cv2.FONT_HERSHEY_SIMPLEX, 0.42, colour, 1, cv2.LINE_AA)
 
 
-def write_overlays(image: np.ndarray, result: dict, accepted_path: Path, rejected_path: Path) -> None:
+def _draw_workspace_polygon(image: np.ndarray, cam: CameraModel, workspace: dict) -> None:
+    projected = [
+        cam.project([xy[0], xy[1], cam.table_z + CUBE_EDGE_M / 2])
+        for xy in workspace["polygon_vertices_xy_m"]
+    ]
+    if any(point is None for point in projected):
+        return
+    polygon = np.rint(np.asarray(projected)).astype(np.int32).reshape((-1, 1, 2))
+    cv2.polylines(image, [polygon], True, (255, 140, 20), 2, cv2.LINE_AA)
+    anchor = tuple(polygon[0, 0])
+    cv2.putText(
+        image, "calibrated part-source workspace", (anchor[0], max(18, anchor[1] - 8)),
+        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (255, 140, 20), 2, cv2.LINE_AA,
+    )
+
+
+def write_overlays(
+    image: np.ndarray,
+    result: dict,
+    accepted_path: Path,
+    rejected_path: Path,
+    cam: CameraModel,
+    workspace: dict,
+) -> None:
     accepted_overlay = image.copy()
     rejected_overlay = image.copy()
+    _draw_workspace_polygon(accepted_overlay, cam, workspace)
+    _draw_workspace_polygon(rejected_overlay, cam, workspace)
     for candidate in result["accepted_detections"]:
         _draw_candidate(accepted_overlay, candidate, True)
     scale2 = (image.shape[1] / 1920.0) ** 2
@@ -398,21 +460,29 @@ def write_overlays(image: np.ndarray, result: dict, accepted_path: Path, rejecte
         raise OSError(f"failed to write {rejected_path}")
 
 
-def run_detector(image_path: str | Path, camera_path: str | Path, output_path: str | Path,
+def run_detector(image_path: str | Path, camera_path: str | Path, workspace_path: str | Path,
+                 output_path: str | Path,
                  overlay_path: str | Path | None = None,
                  rejections_path: str | Path | None = None) -> dict:
     """Run inference.  This is the complete detector I/O boundary."""
-    image_path, camera_path, output_path = map(Path, (image_path, camera_path, output_path))
+    image_path, camera_path, workspace_path, output_path = map(
+        Path, (image_path, camera_path, workspace_path, output_path)
+    )
     image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     if image is None:
         raise FileNotFoundError(image_path)
-    result = detect_image(image, CameraModel(str(camera_path)))
+    cam = CameraModel(str(camera_path))
+    workspace = json.loads(workspace_path.read_text(encoding="utf-8"))
+    result = detect_image(image, cam, workspace)
     result["offline_analysis_artifact"] = True
     result["image_file"] = image_path.name
     result["camera_file"] = camera_path.name
+    result["workspace_file"] = workspace_path.name
     output_path.write_text(json.dumps(result, indent=2) + "\n")
     if overlay_path and rejections_path:
-        write_overlays(image, result, Path(overlay_path), Path(rejections_path))
+        write_overlays(
+            image, result, Path(overlay_path), Path(rejections_path), cam, workspace
+        )
     return result
 
 
@@ -420,11 +490,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True)
     parser.add_argument("--camera", required=True)
+    parser.add_argument("--workspace", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--overlay", required=True)
     parser.add_argument("--rejections", required=True)
     args = parser.parse_args()
-    result = run_detector(args.image, args.camera, args.output, args.overlay, args.rejections)
+    result = run_detector(
+        args.image, args.camera, args.workspace, args.output, args.overlay, args.rejections
+    )
     print(json.dumps({"inventory_valid": result["inventory_valid"],
                       "accepted_cube_count": result["accepted_cube_count"],
                       "counts_by_color": result["counts_by_color"]}, indent=2))

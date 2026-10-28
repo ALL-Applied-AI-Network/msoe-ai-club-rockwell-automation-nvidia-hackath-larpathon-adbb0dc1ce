@@ -3,6 +3,7 @@
 import numpy as np
 import scene_config as C
 from backproject import CameraModel
+from perception_geometry import decorate_camera_calibration
 
 
 def camera_model(cfg):
@@ -17,12 +18,12 @@ def camera_model(cfg):
     matrix[3, :3] = eye
     w, h = cfg["resolution"]
     return CameraModel(
-        dict(
+        decorate_camera_calibration(dict(
             resolution=(w, h),
             focal_length_mm=cfg["focal_length"],
             horizontal_aperture_mm=cfg["horiz_aperture"],
             vertical_aperture_mm=cfg["horiz_aperture"] * h / w,
             camera_to_world=matrix.tolist(),
             table_top_z=C.TABLE_TOP_Z + C.SURFACE_DZ,
-        )
+        ))
     )
