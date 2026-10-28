@@ -20,16 +20,24 @@ def validate_required_motion_outputs(run):
     """Require successful motion evidence independently of optional video."""
     run = Path(run)
     missing = [name for name in REQUIRED_MOTION_FILES if not (run / name).is_file()]
-    side_frames = run / "side_frames"
-    if not side_frames.is_dir() or not any(side_frames.glob("*.png")):
-        missing.append("side_frames/*.png")
+    frame_directories = [run / "side_frames", run / "frames"]
+    if not any(
+        directory.is_dir() and any(directory.glob("*.png"))
+        for directory in frame_directories
+    ):
+        missing.append("side_frames/*.png or frames/*.png")
     if missing:
         raise RuntimeError(f"Missing required smoke outputs: {missing}")
 
     report = json.loads((run / "execution_report.json").read_text(encoding="utf-8"))
-    if not report.get("smoke_test_success"):
+    success_field = (
+        "oracle_sort_success"
+        if report.get("task") == "oracle_six_cube_defect_sort"
+        else "smoke_test_success"
+    )
+    if not report.get(success_field):
         reason = report.get("abort_reason") or report.get("abort_conditions")
-        raise RuntimeError(f"Oracle smoke motion failed: {reason}")
+        raise RuntimeError(f"Oracle motion failed: {reason}")
     return report
 
 

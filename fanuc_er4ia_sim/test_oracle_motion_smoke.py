@@ -182,13 +182,21 @@ class OracleMotionSmokeTests(unittest.TestCase):
         source = (Path(__file__).parent / "sort_scene.py").read_text(
             encoding="utf-8"
         )
-        validation_at = source.index("execution_start_validation = validate_execution_start")
-        first_position_command = source.index("arm.set_joint_positions(full)")
-        first_action_command = source.index(
-            "arm.apply_action(ArticulationAction(joint_positions=full))"
+        recreation_validation_at = source.index("scene_recreation_validation = (")
+        home_initialization_at = source.index("arm.set_joint_positions(full)")
+        post_settle_validation_at = source.index("execution_start_validation = (")
+        stability_at = source.index("evaluate_scene_stability_windows(stability_windows)")
+        command_authorization_at = source.index(
+            "precommand_authorization = authorize_oracle_robot_commands("
         )
-        self.assertLess(validation_at, first_position_command)
-        self.assertLess(validation_at, first_action_command)
+        execution_baseline_at = source.index("before = poses()")
+        first_task_command_at = source.index("command(q, j0 + (j1 - j0) * t)")
+        self.assertLess(recreation_validation_at, home_initialization_at)
+        self.assertLess(home_initialization_at, stability_at)
+        self.assertLess(stability_at, post_settle_validation_at)
+        self.assertLess(post_settle_validation_at, command_authorization_at)
+        self.assertLess(command_authorization_at, execution_baseline_at)
+        self.assertLess(execution_baseline_at, first_task_command_at)
 
     def test_pre_command_translation_above_2mm_fails(self):
         current = copy.deepcopy(self.scene_state["objects"])

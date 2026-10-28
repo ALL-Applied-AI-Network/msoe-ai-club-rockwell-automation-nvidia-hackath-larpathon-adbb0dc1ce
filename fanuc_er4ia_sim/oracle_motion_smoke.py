@@ -6,6 +6,7 @@ explicit ``oracle_single_cube_smoke`` task and is labelled
 """
 
 import argparse
+import copy
 import json
 from pathlib import Path
 
@@ -24,6 +25,15 @@ NON_SELECTED_CUBE_TRANSLATION_LIMIT_M = 0.002
 NON_SELECTED_CUBE_ROTATION_LIMIT_DEG = 5.0
 EXECUTION_POSE_TRANSLATION_TOLERANCE_M = 0.002
 EXECUTION_POSE_ROTATION_TOLERANCE_DEG = 5.0
+INITIAL_PHYSICS_SETTLING_S = 1.0
+STABILITY_WINDOW_S = 1.0
+STABILITY_TRANSLATION_THRESHOLD_M = 0.00025
+STABILITY_ROTATION_THRESHOLD_DEG = 0.25
+REQUIRED_CONSECUTIVE_STABLE_WINDOWS = 2
+MAXIMUM_TOTAL_SETTLING_S = 20.0
+# Conservative lateral envelope around the fingertip during low approach and
+# placement. It covers the 12 mm jaw opening plus finger/collision margin.
+SETTLED_GRIPPER_CLEARANCE_RADIUS_M = 0.020
 
 
 def expected_scene_object_names():
@@ -31,6 +41,391 @@ def expected_scene_object_names():
         *(f"SortCube{i}" for i in range(6)),
         *(f"SortCap{i}" for i in range(2)),
         *(f"SortVial{i}" for i in range(2)),
+    }
+
+
+def _pose_position(pose):
+    return np.asarray(pose.get("centre", pose.get("position", [])), float)
+
+
+def _rotation_delta_deg(first_pose, second_pose):
+    first = np.asarray(first_pose.get("orientation", []), float)
+    second = np.asarray(second_pose.get("orientation", []), float)
+    if first.shape != (4,) or second.shape != (4,):
+        return float("inf")
+    first_norm = np.linalg.norm(first)
+    second_norm = np.linalg.norm(second)
+    if first_norm <= 0 or second_norm <= 0:
+        return float("inf")
+    similarity = abs(np.dot(first, second) / (first_norm * second_norm))
+    return float(np.degrees(2 * np.arccos(np.clip(similarity, 0, 1))))
+
+
+def evaluate_stability_window(samples, expected_names=None):
+    """Measure maximum pairwise pose excursion across one full window."""
+    expected = set(expected_names or expected_scene_object_names())
+    if len(samples) < 2:
+        raise ValueError("A stability window requires at least two pose samples")
+    if any(set(sample) != expected for sample in samples):
+        raise ValueError("Every stability sample must contain the audited inventory")
+    rows = []
+    unstable = []
+    for name in sorted(expected):
+        maximum_translation = 0.0
+        maximum_rotation = 0.0
+        for first_index, first_sample in enumerate(samples[:-1]):
+            first_pose = first_sample[name]
+            first_position = _pose_position(first_pose)
+            for second_sample in samples[first_index + 1 :]:
+                second_pose = second_sample[name]
+                second_position = _pose_position(second_pose)
+                if first_position.shape != (3,) or second_position.shape != (3,):
+                    translation = float("inf")
+                else:
+                    translation = float(np.linalg.norm(second_position - first_position))
+                maximum_translation = max(maximum_translation, translation)
+                maximum_rotation = max(
+                    maximum_rotation,
+                    _rotation_delta_deg(first_pose, second_pose),
+                )
+        passed = bool(
+            maximum_translation <= STABILITY_TRANSLATION_THRESHOLD_M
+            and maximum_rotation <= STABILITY_ROTATION_THRESHOLD_DEG
+        )
+        rows.append(
+            {
+                "name": name,
+                "maximum_translation_excursion_m": maximum_translation,
+                "maximum_translation_excursion_mm": maximum_translation * 1000,
+                "maximum_rotation_excursion_deg": maximum_rotation,
+                "passed": passed,
+            }
+        )
+        if not passed:
+            unstable.append(name)
+    return {
+        "sample_count": len(samples),
+        "objects": rows,
+        "unstable_object_names": unstable,
+        "passed": not unstable,
+    }
+
+
+def evaluate_scene_stability_windows(windows, timed_out=False):
+    """Evaluate consecutive full-scene windows for the shared oracle gate."""
+    window_results = []
+    consecutive = 0
+    maximum_consecutive = 0
+    scene_stable = False
+    for index, samples in enumerate(windows):
+        result = evaluate_stability_window(samples)
+        consecutive = consecutive + 1 if result["passed"] else 0
+        maximum_consecutive = max(maximum_consecutive, consecutive)
+        result.update(
+            {
+                "window_index": index,
+                "consecutive_stable_window_count": consecutive,
+            }
+        )
+        window_results.append(result)
+        if consecutive >= REQUIRED_CONSECUTIVE_STABLE_WINDOWS:
+            scene_stable = True
+            break
+    unstable = (
+        sorted(
+            {
+                name
+                for result in window_results
+                for name in result["unstable_object_names"]
+            }
+        )
+        if not scene_stable
+        else []
+    )
+    return {
+        "minimum_initial_settling_s": INITIAL_PHYSICS_SETTLING_S,
+        "stability_window_duration_s": STABILITY_WINDOW_S,
+        "required_consecutive_stable_windows": REQUIRED_CONSECUTIVE_STABLE_WINDOWS,
+        "stability_translation_threshold_m": STABILITY_TRANSLATION_THRESHOLD_M,
+        "stability_translation_threshold_mm": STABILITY_TRANSLATION_THRESHOLD_M
+        * 1000,
+        "stability_rotation_threshold_deg": STABILITY_ROTATION_THRESHOLD_DEG,
+        "maximum_total_settling_s": MAXIMUM_TOTAL_SETTLING_S,
+        "windows": window_results,
+        "consecutive_stable_window_count": consecutive,
+        "maximum_consecutive_stable_window_count": maximum_consecutive,
+        "scene_stable_before_commands": scene_stable,
+        "unstable_object_names": unstable,
+        "timed_out": bool(timed_out and not scene_stable),
+        "abort_reason": (
+            "scene_stability_timeout" if timed_out and not scene_stable else None
+        ),
+    }
+
+
+def build_settled_execution_plan(plan, settled_poses):
+    """Use validated post-settle cube poses without changing captured evidence."""
+    execution_plan = copy.deepcopy(plan)
+    updates = []
+    for pick in execution_plan.get("picks", []):
+        name = pick.get("oracle_object_name")
+        pose = settled_poses.get(name, {})
+        position = _pose_position(pose)
+        orientation = np.asarray(pose.get("orientation", []), float)
+        if position.shape != (3,) or orientation.shape != (4,):
+            raise ValueError(f"Settled pose unavailable for {name}")
+        yaw = _yaw_deg(orientation)
+        theta = np.deg2rad(yaw)
+        previous = {"xy": list(pick["xy"]), "yaw_deg": pick["yaw_deg"]}
+        pick["xy"] = position[:2].tolist()
+        pick["yaw_deg"] = yaw
+        pick["spread_dir"] = [-float(np.sin(theta)), float(np.cos(theta)), 0.0]
+        pick["settled_execution_pose"] = copy.deepcopy(pose)
+        updates.append(
+            {
+                "name": name,
+                "planned_pose": copy.deepcopy(pick["oracle_simulation_pose"]),
+                "previous_command_pose": previous,
+                "settled_execution_pose": copy.deepcopy(pose),
+            }
+        )
+    execution_plan["settled_pose_updates"] = updates
+    return execution_plan
+
+
+def _point_segment_distance_2d(point, start, end):
+    point = np.asarray(point, float)
+    start = np.asarray(start, float)
+    end = np.asarray(end, float)
+    delta = end - start
+    denominator = float(np.dot(delta, delta))
+    if denominator <= 1e-18:
+        return float(np.linalg.norm(point - start))
+    amount = float(np.clip(np.dot(point - start, delta) / denominator, 0, 1))
+    return float(np.linalg.norm(point - (start + amount * delta)))
+
+
+def _distractor_footprint(name, pose):
+    centre = _pose_position(pose)
+    if centre.shape != (3,):
+        raise ValueError(f"Settled centre unavailable for {name}")
+    if name.startswith("SortCap"):
+        return {"kind": "circle", "centre": centre[:2], "radius": C.CAP_RADIUS}
+    position = np.asarray(pose.get("position", []), float)
+    quaternion = np.asarray(pose.get("orientation", []), float)
+    if position.shape != (3,) or quaternion.shape != (4,):
+        raise ValueError(f"Settled vial root pose unavailable for {name}")
+    w, x, y, z = quaternion
+    axis = np.array(
+        [2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)]
+    )
+    return {
+        "kind": "capsule",
+        "start": position[:2],
+        "end": position[:2] + axis[:2] * C.VIAL_LENGTH,
+        "radius": C.VIAL_RADIUS,
+    }
+
+
+def _footprint_point_clearance(footprint, point):
+    if footprint["kind"] == "circle":
+        distance = np.linalg.norm(np.asarray(point) - footprint["centre"])
+    else:
+        distance = _point_segment_distance_2d(
+            point, footprint["start"], footprint["end"]
+        )
+    return float(distance - footprint["radius"])
+
+
+def _point_rectangle_distance_2d(point, rectangle_min, rectangle_max):
+    point = np.asarray(point, float)
+    lower = np.asarray(rectangle_min, float)
+    upper = np.asarray(rectangle_max, float)
+    outside = np.maximum(np.maximum(lower - point, point - upper), 0)
+    return float(np.linalg.norm(outside))
+
+
+def _segments_intersect_2d(first_start, first_end, second_start, second_end):
+    def cross(first, second):
+        return first[0] * second[1] - first[1] * second[0]
+
+    first_start = np.asarray(first_start, float)
+    first_end = np.asarray(first_end, float)
+    second_start = np.asarray(second_start, float)
+    second_end = np.asarray(second_end, float)
+    first_delta = first_end - first_start
+    second_delta = second_end - second_start
+    denominator = cross(first_delta, second_delta)
+    offset = second_start - first_start
+    if abs(denominator) <= 1e-12:
+        return False
+    first_amount = cross(offset, second_delta) / denominator
+    second_amount = cross(offset, first_delta) / denominator
+    return bool(0 <= first_amount <= 1 and 0 <= second_amount <= 1)
+
+
+def _footprint_rectangle_clearance(footprint, rectangle_min, rectangle_max):
+    if footprint["kind"] == "circle":
+        distance = _point_rectangle_distance_2d(
+            footprint["centre"], rectangle_min, rectangle_max
+        )
+    else:
+        start = footprint["start"]
+        end = footprint["end"]
+        lower = np.asarray(rectangle_min, float)
+        upper = np.asarray(rectangle_max, float)
+        corners = [
+            lower,
+            np.array([lower[0], upper[1]]),
+            upper,
+            np.array([upper[0], lower[1]]),
+        ]
+        edges = list(zip(corners, corners[1:] + corners[:1]))
+        intersects = (
+            _point_rectangle_distance_2d(start, lower, upper) == 0
+            or _point_rectangle_distance_2d(end, lower, upper) == 0
+            or any(_segments_intersect_2d(start, end, edge[0], edge[1]) for edge in edges)
+        )
+        distance = 0.0 if intersects else min(
+            _point_rectangle_distance_2d(start, lower, upper),
+            _point_rectangle_distance_2d(end, lower, upper),
+            *(_point_segment_distance_2d(corner, start, end) for corner in corners),
+        )
+    return float(distance - footprint["radius"])
+
+
+def validate_settled_distractor_clearance(plan, settled_poses):
+    """Reject settled distractors overlapping cubes, slots, or low tool paths."""
+    failures = []
+    rows = []
+    cube_centres = {
+        name: _pose_position(pose)[:2]
+        for name, pose in settled_poses.items()
+        if name.startswith("SortCube") and _pose_position(pose).shape == (3,)
+    }
+    slots = {
+        f"{pick['colour']}_slot_{pick.get('assigned_slot_index', 0)}": np.asarray(
+            pick["assigned_slot"], float
+        )
+        for pick in plan.get("picks", [])
+    }
+    zone_half_size = np.asarray(C.DEFECT_ZONE_SIZE, float) / 2
+    zones = {
+        colour: (
+            np.asarray(centre, float) - zone_half_size,
+            np.asarray(centre, float) + zone_half_size,
+        )
+        for colour, centre in C.DEFECT_ZONE_CENTERS.items()
+    }
+    low_path_points = {
+        f"pickup:{pick['object_id']}": np.asarray(pick["xy"], float)
+        for pick in plan.get("picks", [])
+    }
+    low_path_points.update(
+        {
+            f"placement:{pick['object_id']}": np.asarray(pick["place_xy"], float)
+            for pick in plan.get("picks", [])
+        }
+    )
+    cube_radius = C.CUBE_EDGE * np.sqrt(2) / 2
+    tallest_distractor = max(C.CAP_HEIGHT, 2 * C.VIAL_RADIUS)
+    carry_vertical_clearance = TRANSIT_CLEARANCE_M - tallest_distractor
+    for name in sorted(
+        item for item in settled_poses if item.startswith(("SortCap", "SortVial"))
+    ):
+        footprint = _distractor_footprint(name, settled_poses[name])
+        cube_clearances = {
+            cube: _footprint_point_clearance(footprint, point) - cube_radius
+            for cube, point in cube_centres.items()
+        }
+        slot_clearances = {
+            slot: _footprint_point_clearance(footprint, point) - cube_radius
+            for slot, point in slots.items()
+        }
+        zone_clearances = {
+            colour: _footprint_rectangle_clearance(footprint, lower, upper)
+            for colour, (lower, upper) in zones.items()
+        }
+        path_clearances = {
+            label: _footprint_point_clearance(footprint, point)
+            - SETTLED_GRIPPER_CLEARANCE_RADIUS_M
+            for label, point in low_path_points.items()
+        }
+        overlaps = sorted(key for key, value in cube_clearances.items() if value <= 0)
+        occupied = sorted(key for key, value in slot_clearances.items() if value <= 0)
+        occupied_zones = sorted(
+            key for key, value in zone_clearances.items() if value <= 0
+        )
+        path_violations = sorted(
+            key for key, value in path_clearances.items() if value <= 0
+        )
+        if overlaps:
+            failures.append(f"settled_distractor_overlaps_cube:{name}:{overlaps}")
+        if occupied:
+            failures.append(f"settled_distractor_occupies_slot:{name}:{occupied}")
+        if occupied_zones:
+            failures.append(
+                f"settled_distractor_occupies_zone:{name}:{occupied_zones}"
+            )
+        if path_violations:
+            failures.append(
+                f"settled_distractor_violates_tool_path:{name}:{path_violations}"
+            )
+        rows.append(
+            {
+                "name": name,
+                "cube_clearances_m": cube_clearances,
+                "slot_clearances_m": slot_clearances,
+                "zone_clearances_m": zone_clearances,
+                "low_tool_path_clearances_m": path_clearances,
+                "overlapping_cubes": overlaps,
+                "occupied_slots": occupied,
+                "occupied_zones": occupied_zones,
+                "tool_path_violations": path_violations,
+                "passed": not (
+                    overlaps or occupied or occupied_zones or path_violations
+                ),
+            }
+        )
+    return {
+        "gripper_clearance_radius_m": SETTLED_GRIPPER_CLEARANCE_RADIUS_M,
+        "transit_clearance_m": TRANSIT_CLEARANCE_M,
+        "minimum_carry_vertical_clearance_m": carry_vertical_clearance,
+        "carry_path_clearance_passed": carry_vertical_clearance > 0.05,
+        "objects": rows,
+        "settled_distractor_clearance_passed": bool(
+            not failures and carry_vertical_clearance > 0.05
+        ),
+        "failures": failures,
+    }
+
+
+def authorize_oracle_robot_commands(
+    scene_stability, cube_validation, distractor_clearance, preflight
+):
+    """Authorize task commands only after every post-settle gate passes."""
+    checks = {
+        "scene_stable_before_commands": bool(
+            scene_stability
+            and scene_stability.get("scene_stable_before_commands") is True
+        ),
+        "post_settle_cube_validation_passed": bool(
+            cube_validation
+            and cube_validation.get("pre_command_validation_passed") is True
+        ),
+        "settled_distractor_clearance_passed": bool(
+            distractor_clearance
+            and distractor_clearance.get("settled_distractor_clearance_passed")
+            is True
+        ),
+        "ik_and_trajectory_clearance_passed": bool(
+            preflight and preflight.get("preflight_passed") is True
+        ),
+    }
+    return {
+        "checks": checks,
+        "robot_commands_authorized": all(checks.values()),
+        "failures": [name for name, passed in checks.items() if not passed],
     }
 
 
@@ -277,11 +672,9 @@ def validate_execution_start(plan, current_objects):
     }
 
 
-def preflight_oracle_motion(plan, home, tool, limits, motion_segments):
-    """Check every phase endpoint and geometric clearance before robot commands."""
-    validate_oracle_smoke_plan(plan)
-    pick = plan["picks"][0]
-    expected_names = [
+def preflight_oracle_picks(picks, home, tool, limits, motion_segments_by_pick):
+    """Validate shared phase, clearance, and IK contracts for oracle picks."""
+    expected_phases = [
         "approach",
         "descend",
         "close",
@@ -294,74 +687,115 @@ def preflight_oracle_motion(plan, home, tool, limits, motion_segments):
         "retreat",
         "home",
     ]
-    if [row[0] for row in motion_segments] != expected_names:
-        raise ValueError("Oracle smoke motion phases changed")
-    pick_point = np.array([*pick["xy"], pick["pick_z"]], float)
-    place_point = np.array([*pick["place_xy"], pick["place_z"]], float)
-    safe_pick = pick_point + [0, 0, TRANSIT_CLEARANCE_M]
-    safe_place = place_point + [0, 0, TRANSIT_CLEARANCE_M]
-    if not np.allclose(motion_segments[0][2], safe_pick) or not np.allclose(
-        motion_segments[5][2], safe_place
-    ):
-        raise ValueError("Oracle smoke clearance waypoints are not 130 mm")
+    if len(picks) != len(motion_segments_by_pick):
+        raise ValueError("Every oracle pick requires one motion-segment sequence")
     tallest_object_height = max(C.CUBE_EDGE, C.CAP_HEIGHT, 2 * C.VIAL_RADIUS)
-    clearance_margin = min(safe_pick[2], safe_place[2]) - (
-        C.SURFACE_DZ + tallest_object_height
-    )
-    geometric_clearance_passed = bool(
-        clearance_margin > 0.05
-        and np.allclose(motion_segments[4][2], safe_pick)
-        and np.allclose(motion_segments[9][2], safe_place)
-    )
     ik.set_tool_axis(C.TOOL_AXIS)
     ik.set_spread_axis(C.FINGER_SPREAD_AXIS)
     q = np.deg2rad([C.HOME_POSE_DEG[f"J{i}"] for i in range(1, 7)])
     down = [0.0, 0.0, -1.0]
     q, home_ok = ik.solve(q, home, down, limits, tool_offset=tool)
-    rows = []
-    for name, _p0, p1, _duration, _j0, _j1, spread in motion_segments:
-        q, ok = ik.solve(q, p1, down, limits, tool_offset=tool, spread_dir=spread)
-        if not ok:
+    per_pick = []
+    minimum_margin = float("inf")
+    all_geometry = True
+    all_ik = bool(home_ok)
+    for pick, motion_segments in zip(picks, motion_segments_by_pick):
+        if [row[0] for row in motion_segments] != expected_phases:
+            raise ValueError("Oracle motion phases changed")
+        pick_point = np.array([*pick["xy"], pick["pick_z"]], float)
+        place_point = np.array([*pick["place_xy"], pick["place_z"]], float)
+        safe_pick = pick_point + [0, 0, TRANSIT_CLEARANCE_M]
+        safe_place = place_point + [0, 0, TRANSIT_CLEARANCE_M]
+        clearance_margin = min(safe_pick[2], safe_place[2]) - (
+            C.SURFACE_DZ + tallest_object_height
+        )
+        geometry_ok = bool(
+            clearance_margin > 0.05
+            and np.allclose(motion_segments[0][2], safe_pick)
+            and np.allclose(motion_segments[4][2], safe_pick)
+            and np.allclose(motion_segments[5][2], safe_place)
+            and np.allclose(motion_segments[9][2], safe_place)
+        )
+        rows = []
+        for name, _p0, p1, _duration, _j0, _j1, spread in motion_segments:
             q, ok = ik.solve(
-                q,
-                p1,
-                down,
-                limits,
-                tool_offset=tool,
-                spread_dir=spread,
-                iters=500,
-                damping=0.02,
+                q, p1, down, limits, tool_offset=tool, spread_dir=spread
             )
-        rows.append({"phase": name, "ik_reachable": bool(ok)})
-        if not ok:
+            if not ok:
+                q, ok = ik.solve(
+                    q,
+                    p1,
+                    down,
+                    limits,
+                    tool_offset=tool,
+                    spread_dir=spread,
+                    iters=500,
+                    damping=0.02,
+                )
+            rows.append({"phase": name, "ik_reachable": bool(ok)})
+            if not ok:
+                break
+        pick_ik = len(rows) == len(motion_segments) and all(
+            row["ik_reachable"] for row in rows
+        )
+        per_pick.append(
+            {
+                "object_id": pick.get("object_id"),
+                "phase_ik_checks": rows,
+                "all_phase_endpoints_ik_reachable": pick_ik,
+                "minimum_geometric_clearance_margin_m": float(clearance_margin),
+                "geometric_clearance_validation_passed": geometry_ok,
+                "preflight_passed": bool(pick_ik and geometry_ok),
+            }
+        )
+        minimum_margin = min(minimum_margin, clearance_margin)
+        all_geometry = all_geometry and geometry_ok
+        all_ik = all_ik and pick_ik
+        if not pick_ik:
             break
-    result = {
+    return {
         "home_ik_reachable": bool(home_ok),
-        "phase_ik_checks": rows,
-        "all_phase_endpoints_ik_reachable": bool(home_ok)
-        and len(rows) == len(motion_segments)
-        and all(row["ik_reachable"] for row in rows),
+        "per_pick": per_pick,
+        "all_phase_endpoints_ik_reachable": bool(
+            all_ik and len(per_pick) == len(picks)
+        ),
         "transit_clearance_m": TRANSIT_CLEARANCE_M,
-        "minimum_geometric_clearance_margin_m": float(clearance_margin),
-        "geometric_clearance_validation_passed": geometric_clearance_passed,
+        "minimum_geometric_clearance_margin_m": float(minimum_margin),
+        "geometric_clearance_validation_passed": bool(
+            all_geometry and len(per_pick) == len(picks)
+        ),
+        "preflight_passed": bool(
+            home_ok
+            and all_ik
+            and all_geometry
+            and len(per_pick) == len(picks)
+        ),
     }
-    result["preflight_passed"] = bool(
-        result["all_phase_endpoints_ik_reachable"]
-        and result["geometric_clearance_validation_passed"]
+
+
+def preflight_oracle_motion(plan, home, tool, limits, motion_segments):
+    """Check every phase endpoint and geometric clearance before robot commands."""
+    validate_oracle_smoke_plan(plan)
+    shared = preflight_oracle_picks(
+        plan["picks"], home, tool, limits, [motion_segments]
     )
+    pick_result = shared["per_pick"][0]
+    result = {
+        "home_ik_reachable": shared["home_ik_reachable"],
+        "phase_ik_checks": pick_result["phase_ik_checks"],
+        "all_phase_endpoints_ik_reachable": shared[
+            "all_phase_endpoints_ik_reachable"
+        ],
+        "transit_clearance_m": TRANSIT_CLEARANCE_M,
+        "minimum_geometric_clearance_margin_m": shared[
+            "minimum_geometric_clearance_margin_m"
+        ],
+        "geometric_clearance_validation_passed": shared[
+            "geometric_clearance_validation_passed"
+        ],
+    }
+    result["preflight_passed"] = shared["preflight_passed"]
     return result
-
-
-def _rotation_delta_deg(before_pose, after_pose):
-    before_q = np.asarray(before_pose.get("orientation", []), float)
-    after_q = np.asarray(after_pose.get("orientation", []), float)
-    if before_q.shape != (4,) or after_q.shape != (4,):
-        return float("inf")
-    similarity = abs(
-        np.dot(before_q, after_q)
-        / (np.linalg.norm(before_q) * np.linalg.norm(after_q))
-    )
-    return float(np.degrees(2 * np.arccos(np.clip(similarity, 0, 1))))
 
 
 def evaluate_object_isolation(before, after, events, selected=SELECTED_CUBE):
