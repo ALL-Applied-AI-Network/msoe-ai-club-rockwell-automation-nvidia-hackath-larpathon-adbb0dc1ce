@@ -17,6 +17,8 @@ Provenance tags:
   GUESS     - not observable; placeholder pending measurement
 """
 
+from perception_geometry import CUBE_EDGE_M
+
 # ------------------------------------------------------------------ robot
 # EXACT. Present only in the Isaac 6.0 asset bundle; 5.0/5.1 ship CRX10IAL only.
 ROBOT_USD_SUBPATH = "/Isaac/Robots/Fanuc/er4ia/er4ia.usd"
@@ -235,7 +237,7 @@ SCREWS = []
 
 # -- cube (cube.usda, 16 mm)
 # PHOTO 2026-10-08: real scene has 2 cubes, both yellow.
-CUBE_EDGE = 0.010  # hackathon: 2 mm clearance inside measured 12 mm open gap
+CUBE_EDGE = CUBE_EDGE_M  # hackathon: 2 mm clearance inside measured 12 mm open gap
 # The bottom of the open-ended AA socket remains separated at full closure.
 # Target contact at the hooked ends, allowing 0.3 mm per-jaw seating travel.
 FINGER_INNER_TIP = (SCALLOP_R**2 - SCALLOP_ABOVE_TIP**2) ** 0.5

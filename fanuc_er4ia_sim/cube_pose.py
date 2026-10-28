@@ -3,7 +3,7 @@
 import cv2
 import numpy as np
 from scipy.optimize import differential_evolution
-import scene_config as C
+from perception_geometry import CUBE_EDGE_M
 
 
 def square_yaw(degrees):
@@ -20,10 +20,10 @@ def edge_pose(cam, endpoints):
     ):
         raise ValueError("invalid top edge")
     points = np.array(
-        [cam.to_plane(*(p * [cam.W, cam.H]), z=cam.table_z + C.CUBE_EDGE) for p in uv]
+        [cam.to_plane(*(p * [cam.W, cam.H]), z=cam.table_z + CUBE_EDGE_M) for p in uv]
     )
     edge = points[1, :2] - points[0, :2]
-    if not 0.60 * C.CUBE_EDGE <= np.linalg.norm(edge) <= 1.40 * C.CUBE_EDGE:
+    if not 0.60 * CUBE_EDGE_M <= np.linalg.norm(edge) <= 1.40 * CUBE_EDGE_M:
         raise ValueError("top edge length inconsistent with cube")
     return square_yaw(np.degrees(np.arctan2(edge[1], edge[0])))
 
@@ -34,11 +34,11 @@ def silhouette(cam, xy, yaw, shape, origin=(0, 0)):
     points = [
         cam.project(
             [
-                *(np.asarray(xy) + rot @ np.array([x, y]) * C.CUBE_EDGE / 2),
+                *(np.asarray(xy) + rot @ np.array([x, y]) * CUBE_EDGE_M / 2),
                 cam.table_z + z,
             ]
         )
-        for z in (0, C.CUBE_EDGE)
+        for z in (0, CUBE_EDGE_M)
         for x, y in ((-1, -1), (1, -1), (1, 1), (-1, 1))
     ]
     # Projected coordinates are continuous; integer image pixels sample at
@@ -64,7 +64,7 @@ def silhouette(cam, xy, yaw, shape, origin=(0, 0)):
 def refine_pose(img, cam, obj, xy, yaw, search_half_width=20):
     """Bounded silhouette fit around VLM pose; neither config poses nor GT used."""
     H, W = img.shape[:2]
-    u, v = cam.project([*xy, cam.table_z + C.CUBE_EDGE / 2])
+    u, v = cam.project([*xy, cam.table_z + CUBE_EDGE_M / 2])
     radius = round(40 * W / 1920)
     x0, y0 = max(0, int(u) - radius), max(0, int(v) - radius)
     crop = img[y0 : min(H, int(v) + radius + 1), x0 : min(W, int(u) + radius + 1)]
@@ -93,7 +93,7 @@ def refine_pose(img, cam, obj, xy, yaw, search_half_width=20):
         centre = centres[component] + [x0, y0]
         if np.linalg.norm(centre - [u, v]) > 20 * W / 1920:
             return xy, yaw, 0.0
-        xy = cam.to_plane(*centre, z=cam.table_z + C.CUBE_EDGE / 2)[:2]
+        xy = cam.to_plane(*centre, z=cam.table_z + CUBE_EDGE_M / 2)[:2]
 
     def score(p):
         predicted = silhouette(cam, p[:2], p[2], mask.shape, (x0, y0)) > 0
