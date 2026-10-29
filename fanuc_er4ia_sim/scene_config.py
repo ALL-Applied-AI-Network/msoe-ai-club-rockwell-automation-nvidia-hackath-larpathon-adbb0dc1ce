@@ -18,6 +18,7 @@ Provenance tags:
 """
 
 from perception_geometry import CUBE_EDGE_M
+from physical_geometry_profile import resolve_geometry_profile
 
 # ------------------------------------------------------------------ robot
 # EXACT. Present only in the Isaac 6.0 asset bundle; 5.0/5.1 ship CRX10IAL only.
@@ -279,6 +280,26 @@ CAP_PLUG_LENGTH = CAP_HEIGHT - CAP_FLANGE_THICK
 CAP_PLUG_BASE_RADIUS = 0.930 * 0.0254 / 2
 CAP_PLUG_TIP_RADIUS = 0.820 * 0.0254 / 2
 CAP_ORIENTATIONS = ["narrow_end_up", "narrow_end_up"]
+
+
+def geometry_values(profile=None):
+    """Return dimensions for an explicit profile without mutating module defaults.
+
+    ``None`` deliberately resolves to the historical profile. No environment,
+    path, or filename can select real-cell geometry implicitly.
+    """
+    selected = resolve_geometry_profile(profile)
+    values = selected.dimensions_metres()
+    values.update(
+        {
+            "profile_name": selected.name,
+            "compatibility_id": selected.compatibility_id,
+            "canonical_sha256": selected.canonical_sha256,
+        }
+    )
+    return values
+
+
 # Dataset 3 Phase 1 default: six cubes are placed flat into colour-coded defect
 # zones.  The historical tower remains available as the separate cube_stack mode.
 SORT_TASK = "defect_sort"

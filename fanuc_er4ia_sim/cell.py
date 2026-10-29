@@ -16,6 +16,11 @@ from isaacsim.storage.native import get_assets_root_path
 
 import scene_config as C
 from gripper_geometry import finger_profile, clip_profile, triangulate as _ear_clip
+from physical_geometry_profile import (
+    resolve_geometry_profile,
+    validate_vial_asset,
+    vial_scene_geometry,
+)
 
 FLANGE = C.ROBOT_PRIM + "/J6_link"
 WRIST_CAM_PATH = C.WRIST_CAM["parent"] + "/WristCam"
@@ -575,7 +580,8 @@ def scale_cad_visual(stage, path, scale):
     )
 
 
-def build(stage, with_objects=True):
+def build(stage, with_objects=True, geometry_profile=None):
+    """Build with an explicit geometry profile; ``None`` preserves history."""
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
     UsdGeom.Xform.Define(stage, "/World")
@@ -653,7 +659,7 @@ def build(stage, with_objects=True):
     if with_objects:
         if C.SHOW_FIXTURE:
             add_props(stage)
-        add_sort_objects(stage)
+        add_sort_objects(stage, geometry_profile=geometry_profile)
         if C.SHOW_BINS:
             add_sort_bins(stage)
 
@@ -933,29 +939,38 @@ def add_bin(stage):
 USD_INCH_SCALE = 0.0254  # USD assets use inches; scale to metres
 
 
-def add_sort_objects(stage):
+def add_sort_objects(stage, geometry_profile=None):
     """Load the USD visual assets and add invisible physics colliders."""
     here = os.path.dirname(os.path.abspath(__file__))
     Z = C.TABLE_TOP_Z + C.SURFACE_DZ
+    profile = resolve_geometry_profile(geometry_profile)
+    validate_vial_asset(profile)
+    dimensions = profile.dimensions_metres()
+    vial_radius = dimensions["vial_radius"]
+    cap_radius = dimensions["cap_radius"]
+    cap_height = dimensions["cap_height"]
+    cap_flange_thickness = dimensions["cap_flange_thickness"]
+    cap_plug_length = cap_height - cap_flange_thickness
+    cap_plug_base_radius = dimensions["cap_plug_base_radius"]
+    cap_plug_tip_radius = dimensions["cap_plug_tip_radius"]
+    cube_edge = dimensions["cube_edge"]
 
     # ---- vials: long-axis in XY plane, centred at (x_ctr, y) ----
     # Each entry: (x_ctr, y[, yaw_deg]).  yaw_deg rotates the vial from +X
     # toward +Y (0° = along +X).  R_Y(+90°) maps local +Z -> world +X, then
     # R_Z(yaw) tilts it.  Translation origin offsets for the rotated tail:
     #   T = (x_ctr - L/2·cos(yaw), y - L/2·sin(yaw), Z + r)
-    import math as _math
-
     for i, entry in enumerate(C.SORT_VIALS):
         x_ctr, y = entry[0], entry[1]
         yaw_deg = entry[2] if len(entry) > 2 else 0.0
-        yaw_rad = _math.radians(yaw_deg)
+        geometry = vial_scene_geometry((x_ctr, y), yaw_deg, profile)
         g = UsdGeom.Xform.Define(stage, f"/World/SortVial{i}")
         xf = UsdGeom.Xformable(g.GetPrim())
         xf.AddTranslateOp().Set(
             Gf.Vec3d(
-                x_ctr - C.VIAL_LENGTH / 2 * _math.cos(yaw_rad),
-                y - C.VIAL_LENGTH / 2 * _math.sin(yaw_rad),
-                Z + C.VIAL_RADIUS + 0.001,
+                geometry["origin_xy_m"][0],
+                geometry["origin_xy_m"][1],
+                Z + vial_radius + 0.001,
             )
         )
         if yaw_deg != 0.0:
@@ -970,7 +985,7 @@ def add_sort_objects(stage):
         scale_cad_visual(
             stage,
             vis_path,
-            (C.VIAL_RADIUS / 0.01359, C.VIAL_RADIUS / 0.01359, C.VIAL_LENGTH / 0.203),
+            geometry["visual_scale"],
         )
         # Isaac Sim inserts xformOp:scale:unitsResolve (0.0254) automatically;
         # do not add a second scale op here.
@@ -982,11 +997,11 @@ def add_sort_objects(stage):
 
         coll_path = f"/World/SortVial{i}/Collider"
         coll = UsdGeom.Cylinder.Define(stage, coll_path)
-        coll.CreateAxisAttr("Z")
-        coll.CreateRadiusAttr(C.VIAL_RADIUS)
-        coll.CreateHeightAttr(C.VIAL_LENGTH)
+        coll.CreateAxisAttr(geometry["collision_axis"])
+        coll.CreateRadiusAttr(geometry["collision_radius_m"])
+        coll.CreateHeightAttr(geometry["collision_length_m"])
         UsdGeom.Xformable(coll.GetPrim()).AddTranslateOp().Set(
-            Gf.Vec3d(0, 0, C.VIAL_LENGTH / 2)
+            Gf.Vec3d(*geometry["collision_translate_m"])
         )
         UsdGeom.Imageable(coll.GetPrim()).CreateVisibilityAttr().Set("invisible")
         UsdPhysics.CollisionAPI.Apply(coll.GetPrim())
@@ -1013,13 +1028,13 @@ def add_sort_objects(stage):
         scale_cad_visual(
             stage,
             vis_path,
-            (C.CAP_RADIUS / 0.015875, C.CAP_RADIUS / 0.015875, C.CAP_HEIGHT / 0.01570),
+            (cap_radius / 0.015875, cap_radius / 0.015875, cap_height / 0.01570),
         )
         vis_xf = UsdGeom.Xformable(stage.GetPrimAtPath(vis_path))
         # Translation must precede the units/fit scales in xformOpOrder.
         translate = vis_xf.AddTranslateOp(opSuffix="rimRest")
         translate.Set(
-            Gf.Vec3d(0, 0, C.CAP_FLANGE_THICK if narrow_up else C.CAP_PLUG_LENGTH)
+            Gf.Vec3d(0, 0, cap_flange_thickness if narrow_up else cap_plug_length)
         )
         rotate = vis_xf.AddRotateXOp(opSuffix="domeUp")
         rotate.Set(180.0 if narrow_up else 0.0)
@@ -1034,16 +1049,16 @@ def add_sort_objects(stage):
         coll_path = f"/World/SortCap{i}/Collider/Flange"
         coll = UsdGeom.Cylinder.Define(stage, coll_path)
         coll.CreateAxisAttr("Z")
-        coll.CreateRadiusAttr(C.CAP_RADIUS)
-        coll.CreateHeightAttr(C.CAP_FLANGE_THICK)
+        coll.CreateRadiusAttr(cap_radius)
+        coll.CreateHeightAttr(cap_flange_thickness)
         UsdGeom.Xformable(coll.GetPrim()).AddTranslateOp().Set(
             Gf.Vec3d(
                 0,
                 0,
                 (
-                    C.CAP_FLANGE_THICK / 2
+                    cap_flange_thickness / 2
                     if narrow_up
-                    else C.CAP_PLUG_LENGTH + C.CAP_FLANGE_THICK / 2
+                    else cap_plug_length + cap_flange_thickness / 2
                 ),
             )
         )
@@ -1054,10 +1069,10 @@ def add_sort_objects(stage):
         # cylinder collider incorrectly blocked narrow-end grasps.
         rings = []
         for z, radius in (
-            (0.0, C.CAP_PLUG_BASE_RADIUS),
-            (C.CAP_PLUG_LENGTH, C.CAP_PLUG_TIP_RADIUS),
+            (0.0, cap_plug_base_radius),
+            (cap_plug_length, cap_plug_tip_radius),
         ):
-            local_z = C.CAP_FLANGE_THICK + z if narrow_up else C.CAP_PLUG_LENGTH - z
+            local_z = cap_flange_thickness + z if narrow_up else cap_plug_length - z
             rings.extend(
                 [
                     (radius * math.cos(a), radius * math.sin(a), local_z)
@@ -1102,7 +1117,7 @@ def add_sort_objects(stage):
             usd_path=os.path.join(here, "assets/usd_assets/cube.usda"),
             prim_path=vis_path,
         )
-        scale_cad_visual(stage, vis_path, (C.CUBE_EDGE / 0.016,) * 3)
+        scale_cad_visual(stage, vis_path, (cube_edge / 0.016,) * 3)
         vis_prim = stage.GetPrimAtPath(vis_path)
         # Isaac Sim handles inch→metre conversion; just set the colour variant.
         if vis_prim.IsValid():
@@ -1110,7 +1125,7 @@ def add_sort_objects(stage):
             if vs and vs.IsValid():
                 vs.SetVariantSelection(colour)
 
-        e = C.CUBE_EDGE
+        e = cube_edge
         coll_path = f"/World/SortCube{i}/Collider"
         coll_box = UsdGeom.Cube.Define(stage, coll_path)
         coll_box.CreateSizeAttr(1.0)

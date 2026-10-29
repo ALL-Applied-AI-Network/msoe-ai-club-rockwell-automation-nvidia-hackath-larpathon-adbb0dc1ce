@@ -9,6 +9,8 @@ Scene construction lives in cell.py, dimensions in scene_config.py.
 
 import argparse, os, sys
 
+from physical_geometry_profile import GEOMETRY_PROFILES, HISTORICAL_GEOMETRY_PROFILE
+
 parser = argparse.ArgumentParser()
 parser.add_argument("--headless", action="store_true")
 parser.add_argument("--save", default="", help="write the composed stage to this .usd")
@@ -31,6 +33,12 @@ parser.add_argument(
     help="allow task objects to move during capture warm-up",
 )
 parser.add_argument("--spp", type=int, default=64)
+parser.add_argument(
+    "--geometry-profile",
+    choices=tuple(GEOMETRY_PROFILES),
+    default=HISTORICAL_GEOMETRY_PROFILE.name,
+    help="explicit object-geometry profile; historical geometry remains the default",
+)
 args = parser.parse_args()
 # Kit changes the process working directory, so a relative output path silently
 # writes somewhere the caller will never find. Resolve before Isaac starts.
@@ -55,7 +63,7 @@ import scene_config as C, cell, render_settings
 
 world = World(stage_units_in_meters=1.0)
 stage = omni.usd.get_context().get_stage()
-cell.build(stage)
+cell.build(stage, geometry_profile=args.geometry_profile)
 if args.pathtrace or (args.shoot and not args.realtime):
     render_settings.enable_path_tracing(args.spp)
 
