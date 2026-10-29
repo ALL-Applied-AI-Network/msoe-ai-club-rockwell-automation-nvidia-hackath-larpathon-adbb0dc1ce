@@ -2,7 +2,9 @@
 
 ## Scene and task
 
-The scene has six 10 mm cubes, two caps and two tubes. The original yellow cube
+The starter simulation has six 10 mm cubes, two caps and two tubes. This
+inventory, its colours and its target zones are simulation assumptions rather
+than documented organizer requirements. The original yellow cube
 locations retain their photo-fitted XY positions. Four additional cube locations
 use seed `20261009`. Five cubes have nonzero tabletop rotations. The tower site
 is `(0.28, 0.10)` in robot base XY, with yellow, yellow, blue, blue, red, red layers.
@@ -10,9 +12,15 @@ Dimensions are metres in code; rotations are degrees unless a function states
 otherwise. The robot base origin is at world Z = 0.90 m. The calibrated work surface
 is 5.1 mm below that plane (world Z = 0.8949 m); the mat is 2 mm thick.
 
-The planning image uses a 4K capture of the calibrated table camera. Video
-rendering uses 1920×1080. Camera transforms and intrinsics are read back from
-USD for pixel-to-world conversion.
+The simulation planning image uses a 4K raster capture of the calibrated table
+camera. The real table RGB client is limited to 1920×1080, so the 4K results are
+research evidence only and are not deployable real-client evidence. Video
+rendering uses 1920×1080. Camera transforms and intrinsics are read back from USD
+for pixel-to-world conversion.
+
+The real vial is Ø27.18 × 203 mm. The current starter simulation deliberately
+uses a scaled Ø17 × 140 mm vial for scene appearance; it is not a dimensionally
+faithful model of the real vial.
 
 ## Gripper
 
@@ -59,6 +67,14 @@ orientation. Runtime checks pickup, target position/height and adjacent-layer
 support. Placed yaw must be within 8° modulo 90°, with tilt below 5°.
 This estimator assumes upright, known-size cubes on the calibrated horizontal
 surface. It does not estimate arbitrary six-degree-of-freedom object poses.
+
+Phase 4C-Y found that single-frame 1080p yaw is a NO-GO. Simulation-only 4K
+captures showed that resolution affects yaw observability (seed 4100: 6/6;
+seed 4104: 4/6), but the authorized fixed calibration set completed only one of
+six scenes. The current estimator therefore does not authorize real-robot
+motion. Future work depends on organizer approval of either a fixed safe cube
+yaw in `placement.yaml` or native-resolution multi-frame/wrist RGB-depth
+perception; neither fixed yaw nor wrist-camera observation motion is approved.
 
 ## Validated example and limits
 

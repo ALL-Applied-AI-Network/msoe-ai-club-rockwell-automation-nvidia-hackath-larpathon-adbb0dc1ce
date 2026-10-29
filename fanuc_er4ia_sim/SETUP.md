@@ -85,7 +85,7 @@ timestamped directory. `HOST_PYTHON` optionally overrides `.venv/bin/python`.
 
 | Stage | Interpreter | Entry point |
 | --- | --- | --- |
-| Calibrated 4K table capture | Isaac | `capture_scene.py` |
+| Simulation-only 4K table capture | Isaac | `capture_scene.py` |
 | Cube semantics and measured pose reporting | Cosmos | `perceive.py --stack-cubes` |
 | Plan and evaluation | Host | `plan_sort.py` |
 | Physical grasps and wrist control | Isaac | `sort_scene.py` |
@@ -97,6 +97,13 @@ and six verified placements. Inspect `sort_plan.json` for skips and
 `perception_evaluation.json` for position/colour/yaw errors. Raw model replies
 and image-measured pose inputs are saved under `cube_pose_crops/`.
 Square yaw errors use 90° symmetry. Ground truth evaluates results only.
+
+The 4K capture path is a simulation/research facility, not a real-client
+deployment configuration. The real table RGB client supports at most 1920×1080,
+and current single-frame 1080p yaw is a NO-GO for physical motion. Do not treat
+the simulated scene inventory, colours or zones as organizer requirements.
+The physical-execution commands below document the starter pipeline only; they
+are not authorization to run the real robot while organizer clarification is pending.
 
 To rerun physical validation without rendering, use a fresh captured/planned run:
 

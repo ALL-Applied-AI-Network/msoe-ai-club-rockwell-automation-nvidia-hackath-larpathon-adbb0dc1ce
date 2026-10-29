@@ -3,6 +3,10 @@
 Build an Isaac Sim cell that picks six rotated 10 mm cubes and stacks them
 **yellow → yellow → blue → blue → red → red**. Two caps and two tubes are distractors.
 
+That inventory, colour scheme and stack layout define this starter simulation;
+they are not asserted to be organizer-defined Dataset 3 requirements. Organizer
+clarification is required before adapting the scene or authorizing physical work.
+
 This minimal starter contains code, instructions, tests and required geometry.
 **No images, videos, saved runs, model weights or virtual environments are included.**
 
@@ -42,5 +46,13 @@ uses no simulator ground-truth object poses to command grasps.
 The actuator has **6 mm travel per jaw**, giving a **12 mm maximum straight-face
 gap**. Square yaw is equivalent every 90°. Keep these constraints when editing.
 Changes to layout, camera, cube size or contact geometry need a fresh run.
+
+Phase 4C-Y is research-only. The real table RGB client is limited to 1920×1080;
+4K captures are simulator evidence that resolution affects yaw observability,
+not deployable real-client evidence. Single-frame 1080p yaw is NO-GO, the fixed
+4K calibration set authorized only one of six complete scenes, and the current
+yaw estimator does not authorize real-robot motion. A randomly oriented 10 mm
+cube cannot be safely approached through the 12 mm straight-face opening without
+yaw alignment. No motion or active wrist-camera observation is authorized.
 
 Rebuild this media-free package with `./share.sh --output ../starter.zip`.

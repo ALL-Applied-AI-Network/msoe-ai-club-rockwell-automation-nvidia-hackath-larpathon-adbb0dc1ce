@@ -52,6 +52,10 @@ Horizontal aperture is 20.955 mm for all three pinhole cameras.
 | Side | 1920×1080 | 12.9427 mm | 1185.9 |
 | Wrist | 1280×720 | 10.1440 mm | 619.6 |
 
+The table camera's 1920×1080 entry is the real-client maximum. Phase 4C-Y 4K
+captures are simulator raster experiments only; they do not establish a
+deployable real-camera mode or authorize physical motion.
+
 The source contains ArUco camera solves. The rebuilt side camera has a reported
 reprojection RMS of 3.99 pixels. Table/wrist camera mounts were checked with
 render overlays, but were not physically revalidated after that rebuild.

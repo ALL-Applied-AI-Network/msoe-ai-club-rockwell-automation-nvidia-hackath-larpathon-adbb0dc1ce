@@ -26,6 +26,10 @@ Do not copy a development machine's absolute paths into code.
 
 ## Preserve task semantics
 
+These are starter-simulation semantics, not claims about organizer-defined
+Dataset 3 identifiers, inventory, colours or zones. Do not transfer them to the
+real task without organizer clarification.
+
 - Six cubes: two yellow, two blue, two red. Stack in that bottom-to-top order.
 - Use the table camera for perception. Five cubes start rotated.
 - Gripper actuator: SMC MHZL2-16D2, 6 mm/jaw, 12 mm straight-face opening.

@@ -12,6 +12,7 @@ import gc
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +45,7 @@ from phase4b_design import (
 from perception_geometry import decorate_camera_calibration, simulation_source_workspace
 
 MAX_SYNCHRONIZED_CAPTURE_ATTEMPTS = 5
+SOURCE_DESIGN_RESOLUTION = tuple(RESOLUTION)
 CLEANUP_ORDER = (
     "detach_annotators",
     "destroy_render_product",
@@ -52,6 +54,26 @@ CLEANUP_ORDER = (
     "clear_world",
     "replace_stage",
 )
+
+
+def diagnostic_marker(event: str, **fields) -> None:
+    """Write an opt-in, flushed and fsynced capture progress marker."""
+    path = os.environ.get("PHASE4C_DIAGNOSTIC_PROGRESS")
+    if not path:
+        return
+    record = {
+        "event": str(event),
+        "utc": datetime.now(timezone.utc).isoformat(),
+        **fields,
+    }
+    line = json.dumps(record, sort_keys=True)
+    print(f"[phase4c-diagnostic] {line}", flush=True)
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    with destination.open("a", encoding="utf-8") as stream:
+        stream.write(line + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def _write_json(path: Path, value) -> None:
@@ -268,14 +290,52 @@ def _settled_ground_truth(scene, settled, C) -> dict:
 
 
 def main() -> None:
+    global RESOLUTION
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", required=True)
     parser.add_argument("--seeds", nargs="+", type=int, default=list(SEEDS))
+    parser.add_argument(
+        "--resolution",
+        nargs=2,
+        type=int,
+        metavar=("WIDTH", "HEIGHT"),
+        default=list(RESOLUTION),
+        help="raster resolution only; physical camera pose/aperture are unchanged",
+    )
+    parser.add_argument(
+        "--maximum-attempts",
+        type=int,
+        default=MAX_GENERATION_ATTEMPTS,
+        help="bounded deterministic attempts; defaults to the Phase 4B policy",
+    )
     args = parser.parse_args()
+    requested_resolution = tuple(args.resolution)
+    if requested_resolution[0] <= 0 or requested_resolution[1] <= 0:
+        raise SystemExit("capture resolution must be positive")
+    if requested_resolution[0] * RESOLUTION[1] != requested_resolution[1] * RESOLUTION[0]:
+        raise SystemExit("capture resolution must preserve the calibrated aspect ratio")
+    if not 1 <= args.maximum_attempts <= MAX_GENERATION_ATTEMPTS:
+        raise SystemExit(
+            f"maximum attempts must be in [1, {MAX_GENERATION_ATTEMPTS}]"
+        )
+    RESOLUTION = requested_resolution
     output = Path(args.out).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    if any(output.iterdir()):
-        raise SystemExit(f"Phase 4B output directory must be empty: {output}")
+    existing = {path.name for path in output.iterdir()}
+    diagnostic_prestart = {
+        "diagnostic_console.log",
+        "diagnostic_progress.jsonl",
+        "faulthandler.log",
+        "kit_logs",
+        "startup_environment.json",
+    }
+    unexpected = existing - (
+        diagnostic_prestart if os.environ.get("PHASE4C_DIAGNOSTIC_PROGRESS") else set()
+    )
+    if unexpected:
+        raise SystemExit(
+            f"Phase 4B output directory contains unexpected files: {sorted(unexpected)}"
+        )
     root = Path(__file__).resolve().parent
     design = generate_batch_design(args.seeds)
     frozen = frozen_detector_record(root)
@@ -285,9 +345,13 @@ def main() -> None:
     _write_json(output / "resource_estimate.json", resource_estimate())
     _write_json(output / "proposed_yaad_request.json", proposed_yaad_request())
 
+    diagnostic_marker("before_isaac_import")
     from isaacsim import SimulationApp
+    diagnostic_marker("after_isaac_import")
 
+    diagnostic_marker("before_simulation_app")
     sim_app = SimulationApp({"headless": True})
+    diagnostic_marker("after_simulation_app")
     records = []
     try:
         import cv2
@@ -305,6 +369,7 @@ def main() -> None:
 
         for preview_scene in design["scenes"]:
             seed = preview_scene["seed"]
+            diagnostic_marker(f"before_seed_{seed}_stage", seed=seed)
             scene_dir = output / f"seed_{seed}"
             scene_dir.mkdir()
             attempts_dir = scene_dir / "attempts"
@@ -313,7 +378,7 @@ def main() -> None:
             attempt_records = []
             final_record = None
             terminal_error = None
-            for attempt_index in range(MAX_GENERATION_ATTEMPTS):
+            for attempt_index in range(args.maximum_attempts):
                 attempt_dir = attempts_dir / f"attempt_{attempt_index:02d}"
                 attempt_dir.mkdir()
                 try:
@@ -350,6 +415,12 @@ def main() -> None:
                     stage = omni.usd.get_context().get_stage()
                     stage_identifier = str(stage.GetRootLayer().identifier)
                     cell.build(stage)
+                    diagnostic_marker(
+                        f"after_seed_{seed}_stage",
+                        seed=seed,
+                        attempt_index=attempt_index,
+                        stage_identifier=stage_identifier,
+                    )
                     lights = {}
                     for light_name, scale in scene["lighting_intensity_scales"].items():
                         prim = stage.GetPrimAtPath(f"/World/{light_name}")
@@ -375,6 +446,11 @@ def main() -> None:
                             f"fresh-stage inventory mismatch expected={sorted(expected_names)} actual={sorted(actual_names)}"
                         )
                     wrappers = {}
+                    diagnostic_marker(
+                        "before_physics_release",
+                        seed=seed,
+                        attempt_index=attempt_index,
+                    )
                     for name in sorted(expected_names):
                         prim = stage.GetPrimAtPath(f"/World/{name}")
                         UsdPhysics.RigidBodyAPI(prim).CreateKinematicEnabledAttr().Set(True)
@@ -411,6 +487,13 @@ def main() -> None:
                     windows = []
                     stability = None
                     while settling_steps + window_steps <= maximum_steps:
+                        window_number = len(windows) + 1
+                        diagnostic_marker(
+                            "stability_window_started",
+                            seed=seed,
+                            attempt_index=attempt_index,
+                            window=window_number,
+                        )
                         samples = [poses()]
                         for _ in range(window_steps):
                             world.step(render=False)
@@ -419,6 +502,19 @@ def main() -> None:
                         windows.append(samples)
                         stability = evaluate_scene_stability_windows(windows)
                         stability["actual_settling_duration_s"] = settling_steps / physics_hz
+                        diagnostic_marker(
+                            "stability_window_completed",
+                            seed=seed,
+                            attempt_index=attempt_index,
+                            window=window_number,
+                            passed=stability["windows"][-1]["passed"],
+                            consecutive_stable_window_count=stability[
+                                "consecutive_stable_window_count"
+                            ],
+                            actual_settling_duration_s=stability[
+                                "actual_settling_duration_s"
+                            ],
+                        )
                         log_lines.append(
                             f"attempt={attempt_index} stability_window={len(windows)} "
                             f"passed={stability['windows'][-1]['passed']} "
@@ -461,8 +557,20 @@ def main() -> None:
 
                     # Rendering resources are deliberately created only after
                     # both stability and corrected settled geometry pass.
+                    diagnostic_marker(
+                        "before_camera_creation",
+                        seed=seed,
+                        attempt_index=attempt_index,
+                        requested_resolution=list(RESOLUTION),
+                    )
                     camera = Camera(prim_path=cell.TABLE_CAM_PATH, resolution=RESOLUTION)
                     camera.initialize()
+                    diagnostic_marker(
+                        "after_camera_creation",
+                        seed=seed,
+                        attempt_index=attempt_index,
+                        camera_prim_path=cell.TABLE_CAM_PATH,
+                    )
                     timeline = omni.timeline.get_timeline_interface()
                     if not timeline.is_playing():
                         timeline.play()
@@ -510,9 +618,25 @@ def main() -> None:
                         "timeline_playing": bool(timeline.is_playing()),
                         "capture_attempts": [],
                     }
+                    synchronization_attempt = 0
+
                     def synchronize_capture():
+                        nonlocal synchronization_attempt
+                        synchronization_attempt += 1
+                        diagnostic_marker(
+                            "before_replicator_sync",
+                            seed=seed,
+                            attempt_index=attempt_index,
+                            capture_attempt=synchronization_attempt,
+                        )
                         world.step(render=True)
                         rep.orchestrator.step(wait_for_render=True)
+                        diagnostic_marker(
+                            "after_replicator_sync",
+                            seed=seed,
+                            attempt_index=attempt_index,
+                            capture_attempt=synchronization_attempt,
+                        )
 
                     rgba, capture_rows = bounded_frame_capture(
                         camera.get_rgba,
@@ -551,8 +675,23 @@ def main() -> None:
                         "robot_base_xy": [0.0, 0.0],
                     })
                     workspace_json = simulation_source_workspace(camera_json)
-                    if not cv2.imwrite(str(scene_dir / "world_camera.png"), cv2.cvtColor(image, cv2.COLOR_RGB2BGR)):
+                    image_path = scene_dir / "world_camera.png"
+                    if not cv2.imwrite(str(image_path), cv2.cvtColor(image, cv2.COLOR_RGB2BGR)):
                         raise RuntimeError("world_camera_write_failed")
+                    decoded_image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+                    if decoded_image is None:
+                        raise RuntimeError("world_camera_decode_after_write_failed")
+                    actual_decoded_resolution = [
+                        int(decoded_image.shape[1]),
+                        int(decoded_image.shape[0]),
+                    ]
+                    diagnostic_marker(
+                        "image_written",
+                        seed=seed,
+                        attempt_index=attempt_index,
+                        path=str(image_path),
+                        actual_decoded_resolution=actual_decoded_resolution,
+                    )
                     _write_json(scene_dir / "camera.json", camera_json)
                     _write_json(scene_dir / "workspace.json", workspace_json)
                     _write_json(scene_dir / "release_scene_state.json", release_poses)
@@ -561,6 +700,16 @@ def main() -> None:
                     _write_json(scene_dir / "stability_report.json", stability)
                     _write_json(scene_dir / "ground_truth.json", _settled_ground_truth(scene, settled, C))
                     _write_json(scene_dir / "camera_render_lifecycle.json", lifecycle)
+                    resolution_metadata = {
+                        "source_design_resolution": list(SOURCE_DESIGN_RESOLUTION),
+                        "requested_capture_resolution": list(RESOLUTION),
+                        "actual_decoded_output_resolution": actual_decoded_resolution,
+                        "camera_pose_or_aperture_changed": False,
+                    }
+                    _write_json(
+                        scene_dir / "capture_resolution_metadata.json",
+                        resolution_metadata,
+                    )
                     attempt_record = generation_attempt_record(
                         seed, attempt_index, scene, initial_geometry, settled_geometry, []
                     )
@@ -587,6 +736,7 @@ def main() -> None:
                         "render_product_path": str(render_product_path),
                         "detector_frozen_sha256": frozen["combined_sha256"],
                         "workspace_configuration_sha256": workspace_json["configuration_sha256"],
+                        "capture_resolution_metadata": resolution_metadata,
                     }
                     log_lines.append(
                         f"capture_status=captured_after_stability attempt={attempt_index}"
@@ -618,7 +768,7 @@ def main() -> None:
 
             _write_json(scene_dir / "generation_attempts.json", {
                 "top_level_seed": seed,
-                "maximum_attempts": MAX_GENERATION_ATTEMPTS,
+                "maximum_attempts": args.maximum_attempts,
                 "attempts": attempt_records,
             })
             if final_record is None:
@@ -631,7 +781,10 @@ def main() -> None:
             (scene_dir / "scene.log").write_text("\n".join(log_lines) + "\n", encoding="utf-8")
         _write_json(output / "batch_capture_report.json", {"phase_version": PHASE_VERSION, "records": records})
     finally:
+        diagnostic_marker("before_simulation_app_close")
+        diagnostic_marker("simulation_app_close_invoked")
         sim_app.close()
+        diagnostic_marker("after_simulation_app_close")
 
 
 if __name__ == "__main__":
